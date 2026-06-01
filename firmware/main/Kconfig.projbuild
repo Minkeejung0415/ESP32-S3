@@ -1,0 +1,19 @@
+menu "STEP ESP32-S3 Node"
+
+config ESP_WIFI_SSID
+    string "Wi-Fi SSID"
+    default "STEP_ESP32"
+
+config ESP_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default "changeme"
+
+config STEP_NODE_MASTER
+    bool "ESP-NOW sync master"
+    default y
+
+config STEP_DIO_GPIO
+    int "DIO input GPIO"
+    default 1
+
+endmenu
