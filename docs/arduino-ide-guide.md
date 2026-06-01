@@ -14,6 +14,46 @@ Use **one** XIAO ESP32S3 only — no second node, no ESP-NOW setup.
 
 When you add a second board later, set **`ENABLE_ESPNOW true`** on both (master + slave) — see §8.
 
+## Test over USB (no Wi-Fi)
+
+Use when the board is **USB-connected to the PC only** — no router, no TCP.
+
+1. In `arduino/step_node/step_node.ino` set:
+   ```cpp
+   #define ENABLE_TCP false
+   #define ENABLE_SERIAL_BENCH true
+   #define ENABLE_ESPNOW false
+   ```
+2. **Tools → USB CDC On Boot → Enabled**; upload; pick the board’s **COM port**.
+3. Optional **`SERIAL_OUTPUT_BINARY true`** — same 22-byte Open Ephys header + 8× int16 as TCP, sent over Serial (for host parsers).
+4. Default (**`SERIAL_OUTPUT_BINARY false`**) — one CSV line per sample @ 100 Hz:
+   ```
+   seq,ax,ay,az,gx,gy,gz,dio,cam
+   ```
+5. **Windows host script** (COM port from Device Manager):
+   ```powershell
+   pip install pyserial
+   python host/serial_bench_reader.py COM5
+   ```
+   Or: `set SERIAL_PORT=COM5` then `python host/serial_bench_reader.py`
+
+Serial Monitor @ 115200 also works for a quick eyeball test. Boot log should show **`Wi-Fi skipped — USB serial bench mode`**.
+
+## Open Wi-Fi (no password)
+
+For a **lab access point with no password**:
+
+```cpp
+#define ENABLE_TCP true
+#define ENABLE_SERIAL_BENCH false
+#define WIFI_SSID "MyOpenAP"
+#define WIFI_PASS ""
+```
+
+The sketch calls `WiFi.begin(WIFI_SSID)` when the password string is empty. Then TCP test as usual: `python host/esp32_tcp_client.py` with `ESP32_NODE_HOST` set to the node IP.
+
+**Caveats:** no encryption; anyone on the AP can see traffic — lab/isolated network only. Do not use on production or public Wi-Fi.
+
 ## 1. Install Arduino IDE
 
 1. Install [Arduino IDE 2.x](https://www.arduino.cc/en/software).
@@ -40,15 +80,16 @@ Edit the config block at the top:
 
 | Define | Purpose |
 |--------|---------|
-| `WIFI_SSID` / `WIFI_PASS` | Lab Wi-Fi |
+| `WIFI_SSID` / `WIFI_PASS` | Lab Wi-Fi; **`WIFI_PASS ""`** = open network |
 | `PIN_I2C_SDA` / `PIN_I2C_SCL` | ICM-20948 I2C (default D4/D5 → GPIO 5/6) |
 | `PIN_DIO` | Digital input (default D0 → GPIO 1) |
 | `ICM20948_ADDR` | `0x69` or `0x68` if AD0 grounded |
 | **`ENABLE_ESPNOW`** | **`false` = single board (default); `true` = multi-node sync** |
 | `NODE_IS_MASTER` | Only when `ENABLE_ESPNOW true` |
 | `ENABLE_SD` | `true` on Sense board with SD wired |
-| `ENABLE_TCP` | Open Ephys TCP server on port 5000 |
-| `ENABLE_SERIAL_BENCH` | `true` = CSV on Serial, no TCP (desk test) |
+| `ENABLE_TCP` | Open Ephys TCP server on port 5000 (`false` for USB-only) |
+| `ENABLE_SERIAL_BENCH` | `true` = stream on USB Serial @115200 |
+| `SERIAL_OUTPUT_BINARY` | `true` = Open Ephys binary on Serial; `false` = CSV |
 
 ## 3. Libraries (Board Manager / Library Manager)
 
@@ -113,20 +154,14 @@ python host/esp32_tcp_client.py
 
 ## 7. Serial bench mode (no Wi-Fi)
 
-Set in sketch:
+See **Test over USB (no Wi-Fi)** above. Legacy summary:
 
 ```cpp
-#define ENABLE_SERIAL_BENCH true
 #define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
 ```
 
-Upload, open Serial Monitor. CSV line per sample:
-
-```
-seq,ax,ay,az,gx,gy,gz,dio,cam
-```
-
-Plot in Python or compare to Red Pitaya `tcp_client.py` scaling env vars (`ICM_ACCEL_SCALE`, `ICM_GYRO_SCALE`).
+Use `host/serial_bench_reader.py COMx` on Windows or Serial Monitor @ 115200.
 
 ## 8. ESP-NOW multi-node (optional)
 
@@ -151,7 +186,8 @@ Same architecture in `firmware/` for teams using **idf.py** (camera hooks, FreeR
 | Issue | Fix |
 |-------|-----|
 | ICM not found | Check wiring, I2C address 0x68/0x69, run with synthetic fallback |
-| No TCP client | Firewall; ping node IP; confirm `ENABLE_TCP` and not serial bench |
+| No TCP client | Firewall; ping node IP; open Wi-Fi uses `WIFI_PASS ""` |
+| USB bench empty | `ENABLE_TCP false`, `ENABLE_SERIAL_BENCH true`; use `serial_bench_reader.py` |
 | ESP-NOW no sync | Same RF channel; Wi-Fi must be started before `esp_now_init` |
 | SD fail | Sense CS pin, FAT32 card, `ENABLE_SD` |
 

@@ -2,15 +2,48 @@
 
 Wireless **Seeed XIAO ESP32-S3** node for the STEP gait stack: **ICM-20948** IMU, **DIO**, **Open Ephys TCP** — one board is enough for v1 bench.
 
-## Single board quick test (start here)
+## Quick test modes
 
-1. Open **`arduino/step_node/step_node.ino`** — leave **`ENABLE_ESPNOW false`** (default).
-2. Set **`WIFI_SSID`** / **`WIFI_PASS`**, flash **XIAO_ESP32S3** ([full guide](docs/arduino-ide-guide.md)).
-3. Serial Monitor → **`WiFi OK IP=...`**.
-4. **TCP:** `set ESP32_NODE_HOST=<IP>` → `python host/esp32_tcp_client.py`
-5. **Or no Wi-Fi:** `ENABLE_SERIAL_BENCH true`, `ENABLE_TCP false` → CSV on Serial @ 115200.
+### (A) USB only — no Wi-Fi
 
-Multi-node **ESP-NOW** is optional later (`ENABLE_ESPNOW true`). Camera is **v2**.
+```cpp
+#define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
+#define ENABLE_ESPNOW false
+```
+
+Flash **XIAO_ESP32S3**, then on Windows:
+
+```powershell
+pip install pyserial
+python host/serial_bench_reader.py COM5
+```
+
+Replace `COM5` with your port (Device Manager). Optional: **`SERIAL_OUTPUT_BINARY true`** for Open Ephys binary on Serial instead of CSV.
+
+### (B) Open Wi-Fi — TCP, no password
+
+```cpp
+#define ENABLE_TCP true
+#define ENABLE_SERIAL_BENCH false
+#define WIFI_SSID "MyOpenAP"
+#define WIFI_PASS ""
+```
+
+Flash, note IP on Serial Monitor, then:
+
+```powershell
+set ESP32_NODE_HOST=<node-ip>
+python host/esp32_tcp_client.py
+```
+
+Lab / isolated network only — open AP has no encryption.
+
+### (C) WPA Wi-Fi + TCP (default sketch)
+
+Set `WIFI_SSID` / `WIFI_PASS`, leave `ENABLE_TCP true`, run `host/esp32_tcp_client.py`.
+
+Full steps: **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)**
 
 ## Hardware
 
@@ -39,23 +72,12 @@ Multi-node **ESP-NOW** is optional later (`ENABLE_ESPNOW true`). Camera is **v2*
 
 Same modules in **`firmware/`** — menuconfig **STEP_ENABLE_ESPNOW** defaults off for single-node.
 
-```bash
-cd firmware
-idf.py set-target esp32s3
-idf.py build flash monitor
-```
+## Host scripts
 
-## Host / Open Ephys / OpenSim
-
-1. Set `ESP32_NODE_HOST` and `ESP32_NODE_PORT=5000`
-2. **`host/esp32_tcp_client.py`**
-3. **Open Ephys:** Ephys Socket plugin, TCP client mode
-
-## Planning (GSD)
-
-- `.planning/PROJECT.md` — goals
-- `.planning/REQUIREMENTS.md` — v1 vs v2
-- `.planning/ROADMAP.md` — phases
+| Script | Use when |
+|--------|----------|
+| `host/serial_bench_reader.py COMx` | USB serial bench (no Wi-Fi) |
+| `host/esp32_tcp_client.py` | TCP over Wi-Fi |
 
 ## Repository
 

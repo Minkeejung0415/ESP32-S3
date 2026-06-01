@@ -19,10 +19,11 @@
 #include <SD.h>
 #include <SPI.h>
 #include <math.h>
+#include <string.h>
 
 // ---------- User config ----------
 #define WIFI_SSID "STEP_ESP32"
-#define WIFI_PASS "changeme"
+#define WIFI_PASS "changeme"       // "" = open network (no password); lab use only
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
@@ -36,7 +37,11 @@
 #define NODE_IS_MASTER true   // only used when ENABLE_ESPNOW is true
 #define ENABLE_SD false
 #define ENABLE_TCP true
-#define ENABLE_SERIAL_BENCH false  // true = CSV on Serial @115200, skip TCP
+#define ENABLE_SERIAL_BENCH false  // true = stream samples over USB Serial @115200
+
+// USB-only bench: ENABLE_TCP false + ENABLE_SERIAL_BENCH true (Wi-Fi skipped automatically)
+// SERIAL_OUTPUT_BINARY true = Open Ephys 22-byte header + int16 payload on Serial (not CSV)
+#define SERIAL_OUTPUT_BINARY false
 
 // SD (XIAO ESP32S3 Sense expansion — adjust if your wiring differs)
 #define PIN_SD_CS 21
@@ -56,10 +61,15 @@ struct OeHeader {
 WiFiServer server(TCP_PORT);
 WiFiClient client;
 bool streaming = false;
+bool wifi_up = false;
 
 uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
 bool icm_ok = false;
+
+static bool useWifi() {
+  return ENABLE_TCP || ENABLE_ESPNOW;
+}
 
 typedef struct {
   uint32_t seq;
@@ -117,7 +127,6 @@ void readImu(int16_t out[6]) {
     out[3] = out[4] = out[5] = 0;
     return;
   }
-  /* TODO: burst read accel/gyro registers — placeholder zeros until calibrated */
   for (int i = 0; i < 6; i++) out[i] = 0;
 }
 
@@ -125,9 +134,18 @@ int16_t readDio() {
   return (int16_t)digitalRead(PIN_DIO);
 }
 
+void fillOeHeader(OeHeader *hdr) {
+  hdr->offset = 0;
+  hdr->num_channels = NUM_CHANNELS;
+  hdr->samples_per_channel = 1;
+  hdr->element_size = 2;
+  hdr->bit_depth = 16;
+  hdr->num_bytes = NUM_CHANNELS * 1 * 2;
+}
+
 void sendEspNowSync() {
 #if ENABLE_ESPNOW
-  if (!NODE_IS_MASTER) return;
+  if (!NODE_IS_MASTER || !wifi_up) return;
   SyncPacket pkt = {seq, (int64_t)esp_timer_get_time()};
   uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   esp_now_send(bcast, (uint8_t *)&pkt, sizeof(pkt));
@@ -137,16 +155,25 @@ void sendEspNowSync() {
 void packAndSendTcp() {
   if (!client || !client.connected() || !streaming) return;
 
-  OeHeader hdr = {};
-  hdr.offset = 0;
-  hdr.num_channels = NUM_CHANNELS;
-  hdr.samples_per_channel = 1;
-  hdr.element_size = 2;
-  hdr.bit_depth = 16;
-  hdr.num_bytes = NUM_CHANNELS * 1 * 2;
-
+  OeHeader hdr;
+  fillOeHeader(&hdr);
   client.write((uint8_t *)&hdr, sizeof(hdr));
   client.write((uint8_t *)channels, sizeof(channels));
+}
+
+void sendSerialBench() {
+#if ENABLE_SERIAL_BENCH
+#if SERIAL_OUTPUT_BINARY
+  OeHeader hdr;
+  fillOeHeader(&hdr);
+  Serial.write((uint8_t *)&hdr, sizeof(hdr));
+  Serial.write((uint8_t *)channels, sizeof(channels));
+#else
+  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                (unsigned long)seq, channels[0], channels[1], channels[2],
+                channels[3], channels[4], channels[5], channels[6], channels[7]);
+#endif
+#endif
 }
 
 void logSd() {
@@ -171,18 +198,39 @@ void handleLine(const String &line) {
 }
 
 void setupWifi() {
+  if (!useWifi()) {
+    Serial.println("Wi-Fi skipped — USB serial bench mode");
+    return;
+  }
+
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.printf("Connecting to %s", WIFI_SSID);
+  if (strlen(WIFI_PASS) == 0) {
+    Serial.printf("Connecting to open network %s (no password)\n", WIFI_SSID);
+    WiFi.begin(WIFI_SSID);
+  } else {
+    Serial.printf("Connecting to %s", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+  }
+
+  uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    if (millis() - start > 30000) {
+      Serial.println("\nWi-Fi connect timeout");
+      return;
+    }
   }
+  wifi_up = true;
   Serial.printf("\nWiFi OK IP=%s\n", WiFi.localIP().toString().c_str());
 }
 
 void setupEspNow() {
 #if ENABLE_ESPNOW
+  if (!wifi_up) {
+    Serial.println("ESP-NOW skipped (Wi-Fi not connected)");
+    return;
+  }
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
     return;
@@ -218,24 +266,35 @@ void setup() {
 #endif
 
 #if ENABLE_TCP && !ENABLE_SERIAL_BENCH
-  server.begin();
-  Serial.printf("TCP listen :%d\n", TCP_PORT);
+  if (wifi_up) {
+    server.begin();
+    Serial.printf("TCP listen :%d\n", TCP_PORT);
+  }
+#elif ENABLE_SERIAL_BENCH
+  Serial.println("Serial bench active @115200");
+#if SERIAL_OUTPUT_BINARY
+  Serial.println("Format: Open Ephys binary (22-byte header + int16 x8)");
+#else
+  Serial.println("Format: CSV seq,ax,ay,az,gx,gy,gz,dio,cam");
+#endif
 #endif
 }
 
 void loop() {
 #if ENABLE_TCP && !ENABLE_SERIAL_BENCH
-  if (!client || !client.connected()) {
-    client = server.available();
-    if (client) {
-      streaming = false;
-      Serial.println("Client connected");
+  if (wifi_up) {
+    if (!client || !client.connected()) {
+      client = server.available();
+      if (client) {
+        streaming = false;
+        Serial.println("Client connected");
+      }
     }
-  }
-  while (client && client.available()) {
-    String line = client.readStringUntil('\n');
-    line.trim();
-    if (line.length()) handleLine(line);
+    while (client && client.available()) {
+      String line = client.readStringUntil('\n');
+      line.trim();
+      if (line.length()) handleLine(line);
+    }
   }
 #endif
 
@@ -246,17 +305,12 @@ void loop() {
 
   readImu(channels);
   channels[6] = readDio();
-  channels[7] = 0;  // camera deferred v2
+  channels[7] = 0;
 
   sendEspNowSync();
   packAndSendTcp();
+  sendSerialBench();
   logSd();
-
-#if ENABLE_SERIAL_BENCH
-  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d\n",
-                (unsigned long)seq, channels[0], channels[1], channels[2],
-                channels[3], channels[4], channels[5], channels[6], channels[7]);
-#endif
 
   seq++;
 }
