@@ -100,7 +100,48 @@ After **5 s pause**, first data line:
 0,<real ax>,<real ay>,...
 ```
 
-**DIO (ch6):** `PIN_DIO` defaults to D0 with internal pull-up. If nothing is wired, ch6 may sit at 0 or 1 — harmless for IMU-only tests.
+**DIO (ch6):** `PIN_DIO` defaults to **D0 (GPIO 1)** with internal pull-up. Packed int16: **bit 0 = level** (1 idle/high, 0 pressed to GND); **bits 1–15 = debounced edge count**. If nothing is wired, ch6 sits at 1 (or 0 if floating) — harmless for IMU-only tests.
+
+## Phase 2: Test DIO over USB
+
+No Wi-Fi or TCP required — default sketch uses USB serial bench mode (`ENABLE_TCP false`, `ENABLE_SERIAL_BENCH true`).
+
+### Wiring
+
+| Signal | XIAO pad | Notes |
+|--------|----------|-------|
+| DIO | **D0** (GPIO 1) | `PIN_DIO` in sketch; change `#define` if wired elsewhere |
+| Button | D0 → **GND** | Momentary switch; internal pull-up — press pulls low |
+
+Optional: add a 100 nF cap D0–GND for noisy benches (not required for desk test).
+
+### Boot check
+
+After reset @ 115200, look for:
+
+```
+DIO: GPIO1 (pad D0) pull-up — initial level=1 (1=idle, 0=GND)
+```
+
+Idle (button open): level **1**. Pressed: level **0**.
+
+### 3-step USB test
+
+1. **Upload** `arduino/step_node/step_node.ino` with USB CDC enabled; open Serial Monitor @ 115200 or run `python host/serial_bench_reader.py COM5` (close Monitor if port busy).
+2. **Wire** a momentary button from **D0 to GND**. Wait for CSV after the 5 s boot pause (`# STEP boot complete icm=OK ... dio_ch6=level|edges`).
+3. **Press/release** the button — within **~20 ms** (one CSV row @ 100 Hz) **ch6** (8th CSV column) should show:
+   - **Level:** odd values (1, 3, 5…) = high; even values (0, 2, 4…) = low — decode with `ch6 & 1`
+   - **Edges:** each debounced transition increments the upper bits — `(ch6 >> 1)` counts presses+releases
+
+Example CSV row (button pressed once):
+
+```
+12,1234,5678,...,0,0
+```
+
+Here `dio=0` → level 0 (pressed). After release, `dio=1` (or higher if edges accumulated).
+
+**Pass:** ch6 level toggles 1↔0 with button; edge count increases on each debounced transition. **Fail:** ch6 stuck — check D0 wiring and that `PIN_DIO` matches your pad.
 
 ### Windows — read samples on the PC
 
@@ -225,7 +266,7 @@ Channel map:
 | Ch | Content |
 |----|---------|
 | 0–5 | ICM-20948 ax, ay, az, gx, gy, gz (int16; scale on host) |
-| 6 | DIO level |
+| 6 | DIO: bit0 level, bits1–15 edge count |
 | 7 | Reserved (0 in v1; camera v2) |
 
 Host test:

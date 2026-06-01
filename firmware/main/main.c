@@ -68,6 +68,7 @@ static void acquisition_task(void *arg)
         sample.timestamp_us = esp_timer_get_time();
 
         icm20948_read_scaled(sample.ch);
+        dio_input_update();
         sample.ch[6] = dio_input_read_channel();
         sample.ch[7] = camera_verify_motion_score();
 

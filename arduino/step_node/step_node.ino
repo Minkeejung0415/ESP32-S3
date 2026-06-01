@@ -27,10 +27,12 @@
 #include <math.h>
 #include <string.h>
 
-#define FIRMWARE_VERSION "1.2.0"
+#define FIRMWARE_VERSION "1.3.0"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
 #define BOOT_DIAGNOSTICS true
+
+#define DIO_DEBOUNCE_MS 15   // stable toggle within ~20 ms @ 100 Hz
 
 #define WIFI_SSID "STEP_ESP32"
 #define WIFI_PASS "changeme"
@@ -41,13 +43,13 @@
 
 #define PIN_I2C_SDA 5   // XIAO D4 / GPIO5
 #define PIN_I2C_SCL 6   // XIAO D5 / GPIO6
-#define PIN_DIO 1
+#define PIN_DIO 1       // XIAO D0 / GPIO1 — change via #define if wired elsewhere
 #define ICM20948_ADDR 0x69
 
 #define NODE_IS_MASTER true
 #define ENABLE_SD false
-#define ENABLE_TCP true
-#define ENABLE_SERIAL_BENCH false
+#define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
 #define SERIAL_OUTPUT_BINARY false
 #define PIN_SD_CS 21
 
@@ -80,6 +82,14 @@ uint8_t icm_addr = ICM20948_ADDR;
 uint32_t boot_ms = 0;
 bool csv_banner_sent = false;
 uint32_t last_status_ms = 0;
+
+// DIO ch6: bit0 = level (1 idle/high, 0 pressed to GND); bits1-15 = debounced edge count
+struct {
+  bool stable_high;
+  bool pending_raw;
+  uint32_t pending_since_ms;
+  uint16_t edge_count;
+} dio_state = {true, true, 0, 0};
 
 static bool useWifi() { return ENABLE_TCP || ENABLE_ESPNOW; }
 
@@ -171,6 +181,39 @@ static void printBootDiagnostics() {
 #endif
 }
 
+static void initDio() {
+  pinMode(PIN_DIO, INPUT_PULLUP);
+  bool level = digitalRead(PIN_DIO);
+  dio_state.stable_high = level;
+  dio_state.pending_raw = level;
+  dio_state.pending_since_ms = millis();
+  Serial.printf("DIO: GPIO%d (pad D0) pull-up — initial level=%d (1=idle, 0=GND)\n",
+                PIN_DIO, level ? 1 : 0);
+  Serial.println("DIO ch6: bit0=level, bits1-15=edge_count (Open Ephys int16)");
+}
+
+static void updateDio() {
+  bool raw = digitalRead(PIN_DIO);
+  uint32_t now = millis();
+  if (raw != dio_state.pending_raw) {
+    dio_state.pending_raw = raw;
+    dio_state.pending_since_ms = now;
+  }
+  if ((now - dio_state.pending_since_ms) >= (uint32_t)DIO_DEBOUNCE_MS &&
+      dio_state.pending_raw != dio_state.stable_high) {
+    dio_state.stable_high = dio_state.pending_raw;
+    if (dio_state.edge_count < 0x7FFF) {
+      dio_state.edge_count++;
+    }
+  }
+}
+
+static int16_t packDioCh6() {
+  uint16_t packed = (dio_state.stable_high ? 1u : 0u) |
+                    ((uint32_t)(dio_state.edge_count & 0x7FFFu) << 1);
+  return (int16_t)packed;
+}
+
 static bool initIcm20948() {
   const uint8_t candidates[] = {ICM20948_ADDR, 0x68, 0x69};
   for (uint8_t a : candidates) {
@@ -223,8 +266,6 @@ static void readImu(int16_t out[6]) {
   out[3] = out[4] = out[5] = 0;
 }
 
-static int16_t readDio() { return (int16_t)digitalRead(PIN_DIO); }
-
 static void fillOeHeader(OeHeader *hdr) {
   hdr->offset = 0;
   hdr->num_channels = NUM_CHANNELS;
@@ -256,7 +297,7 @@ static void packAndSendTcp() {
 static void sendSerialBench() {
 #if ENABLE_SERIAL_BENCH
   if (!csv_banner_sent) {
-    Serial.printf("# STEP boot complete icm=%s addr=0x%02X\n",
+    Serial.printf("# STEP boot complete icm=%s addr=0x%02X dio_ch6=level|edges\n",
                   icm_ok ? "OK" : "FALLBACK", icm_addr);
     csv_banner_sent = true;
   }
@@ -358,7 +399,7 @@ void setup() {
   Serial.println();
   Serial.println("STEP node (Arduino) starting");
 
-  pinMode(PIN_DIO, INPUT_PULLUP);
+  initDio();
 
   printBootDiagnostics();
   icm_ok = initIcm20948();
@@ -417,7 +458,8 @@ void loop() {
   last_us = now;
 
   readImu(channels);
-  channels[6] = readDio();
+  updateDio();
+  channels[6] = packDioCh6();
   channels[7] = 0;
 
   sendEspNowSync();

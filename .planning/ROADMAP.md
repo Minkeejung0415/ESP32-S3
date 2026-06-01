@@ -61,8 +61,8 @@
 
 | Phase | Status |
 |-------|--------|
-| 1 | In Progress — Arduino sketch + guide |
-| 2 | Not Started |
+| 1 | **Complete** — ICM20948 @ 0x68/0x69, USB boot diagnostics v1.2+ |
+| 2 | **Complete** — DIO debounce + edge count on ch6 (v1.3.0) |
 | 3 | Not Started |
 | 4 | Not Started |
 | 5 | In Progress — host client + docs |
