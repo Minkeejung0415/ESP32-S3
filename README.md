@@ -4,22 +4,22 @@ Wireless **Seeed XIAO ESP32-S3** node for the STEP gait stack: **ICM-20948** IMU
 
 ## Quick test modes
 
-### (A) USB only — no Wi-Fi
+### (A) USB only — 4-wire ICM, no Wi-Fi
+
+See **[4-wire ICM20948 + USB](docs/arduino-ide-guide.md#4-wire-icm20948--usb-to-pc)** in the guide. Preset:
 
 ```cpp
 #define ENABLE_TCP false
 #define ENABLE_SERIAL_BENCH true
 #define ENABLE_ESPNOW false
+#define ENABLE_SD false
 ```
 
-Flash **XIAO_ESP32S3**, then on Windows:
+Wiring: ICM **VCC→3V3**, **GND→GND**, **SDA→D4**, **SCL→D5**. Flash **XIAO_ESP32S3**, USB CDC enabled:
 
 ```powershell
-pip install pyserial
 python host/serial_bench_reader.py COM5
 ```
-
-Replace `COM5` with your port (Device Manager). Optional: **`SERIAL_OUTPUT_BINARY true`** for Open Ephys binary on Serial instead of CSV.
 
 ### (B) Open Wi-Fi — TCP, no password
 

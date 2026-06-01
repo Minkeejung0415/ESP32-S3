@@ -4,6 +4,18 @@
  * Optional ESP-NOW multi-node sync (off by default — one board is enough for v1).
  *
  * Guide: docs/arduino-ide-guide.md
+ *
+ * --- WIRING_4WIRE_ICM + USB to PC (copy-paste preset) ---
+ * Hardware: XIAO ESP32-S3 Sense, ICM20948 on 4 wires only (no DIO/SD/camera).
+ *   ICM VCC -> 3V3    ICM GND -> GND    ICM SDA -> D4 (GPIO5)
+ *   ICM SCL -> D5 (GPIO6)    AD0 high -> I2C 0x69, AD0 low -> 0x68
+ * Arduino: Board = XIAO_ESP32S3, USB CDC On Boot = Enabled
+ * #define ENABLE_TCP false
+ * #define ENABLE_SERIAL_BENCH true
+ * #define ENABLE_ESPNOW false
+ * #define ENABLE_SD false
+ * #define ICM20948_ADDR 0x69
+ * --- end preset ---
  */
 
 // ---------- User config (before includes that depend on flags) ----------
@@ -29,9 +41,9 @@
 #define SAMPLE_HZ 100
 #define NUM_CHANNELS 8
 
-#define PIN_I2C_SDA 5   // XIAO D4
-#define PIN_I2C_SCL 6   // XIAO D5
-#define PIN_DIO 1       // XIAO D0 — change as wired
+#define PIN_I2C_SDA 5   // XIAO pad D4 — hardware I2C SDA (Seeed wiki: GPIO5)
+#define PIN_I2C_SCL 6   // XIAO pad D5 — hardware I2C SCL (Seeed wiki: GPIO6)
+#define PIN_DIO 1       // XIAO D0 — optional; floating OK if unconnected (ch6)
 #define ICM20948_ADDR 0x69
 
 #define NODE_IS_MASTER true   // only used when ENABLE_ESPNOW is true

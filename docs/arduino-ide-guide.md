@@ -39,6 +39,73 @@ Use when the board is **USB-connected to the PC only** — no router, no TCP.
 
 Serial Monitor @ 115200 also works for a quick eyeball test. Boot log should show **`Wi-Fi skipped — USB serial bench mode`**.
 
+## 4-wire ICM20948 + USB to PC
+
+Typical lab setup: **XIAO ESP32-S3 Sense** on USB to the PC, **ICM-20948 on four wires only** (no DIO, SD, camera, or second board).
+
+### Wiring
+
+| ICM-20948 | Connect to XIAO Sense |
+|-----------|------------------------|
+| VCC | **3V3** (3.3 V — not 5 V) |
+| GND | **GND** |
+| SDA | **D4** (GPIO **5**, default I2C data) |
+| SCL | **D5** (GPIO **6**, default I2C clock) |
+
+The sketch uses `PIN_I2C_SDA 5` and `PIN_I2C_SCL 6`, which match the [Seeed pin map](https://wiki.seeedstudio.com/xiao_esp32s3_pin_multiplexing/) for D4/D5. In Arduino IDE, select board **XIAO_ESP32S3** (not a generic ESP32-S3 dev module).
+
+**I2C address:** `ICM20948_ADDR 0x69` if AD0 is high (often default on breakouts); use **`0x68`** if AD0 is tied to GND.
+
+### Recommended defines (USB-only)
+
+Change from Wi-Fi/TCP config — PC is on USB, not on the AP:
+
+```cpp
+#define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
+#define ENABLE_ESPNOW false
+#define ENABLE_SD false
+#define SERIAL_OUTPUT_BINARY false   // CSV lines; true = Open Ephys binary on Serial
+```
+
+Leave `PIN_I2C_*` at 5/6 unless your wiring differs.
+
+### Arduino IDE steps
+
+1. **Tools → Board → XIAO_ESP32S3**
+2. **Tools → USB CDC On Boot → Enabled**
+3. **Tools → Port →** your COM port (e.g. COM5 in Device Manager)
+4. Upload `arduino/step_node/step_node.ino`
+
+### Serial Monitor — what success looks like
+
+After reset @ **115200 baud**, you should see lines like:
+
+```
+STEP node (Arduino) starting
+ICM20948: OK
+Wi-Fi skipped — USB serial bench mode
+ESP-NOW disabled — single-node mode
+Serial bench active @115200
+Format: CSV seq,ax,ay,az,gx,gy,gz,dio,cam
+```
+
+- **`ICM20948: OK`** — WHO_AM_I read succeeded (chip returns **0xEA**; sketch logs a warning if the value differs but still marks OK when I2C responds).
+- **`ICM20948: synthetic fallback`** — no I2C ACK: check VCC/GND, SDA/SCL on **D4/D5**, address 0x68 vs 0x69, and 3.3 V only.
+
+Then CSV samples stream @ 100 Hz, e.g. `0,1000,500,16384,0,0,0,1,0`.
+
+**DIO (ch6):** `PIN_DIO` defaults to D0 with internal pull-up. If nothing is wired, ch6 may sit at 0 or 1 — harmless for IMU-only tests.
+
+### Windows — read samples on the PC
+
+```powershell
+pip install pyserial
+python host/serial_bench_reader.py COM5
+```
+
+Replace `COM5` with your port. Close Serial Monitor first if the port is busy.
+
 ## Open Wi-Fi (no password)
 
 For a **lab access point with no password**:
