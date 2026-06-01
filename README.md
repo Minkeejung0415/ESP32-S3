@@ -60,6 +60,8 @@ Full steps: **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)**
 
 **Wiring diagram (Mermaid + ASCII):** [docs/wiring-diagram.md](docs/wiring-diagram.md)
 
+**Open Ephys / Plugin repo:** [docs/open-ephys-plugin.md](docs/open-ephys-plugin.md)
+
 ## Red Pitaya parity
 
 | Parameter | Value |

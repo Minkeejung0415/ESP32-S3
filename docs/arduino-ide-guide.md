@@ -58,22 +58,22 @@ See **[wiring-diagram.md](wiring-diagram.md)** for Mermaid/ASCII diagrams and th
 | AD0 *(or **ADO**)* | **GND** → addr **0x68**; or **3V3** → **0x69** |
 | **NCS** | **3V3** — **required** on EDA/ECL modules (I2C mode) |
 
-### ICM-20948 pin mapping (I2C mode — EDA/ECL silk)
+### ICM-20948 pin mapping (I2C mode — dual silk)
 
-If your module is labeled **EDA, ECL, ADO, NCS, INT, FSYNC** (no SDA/SCL/VCC/GND on silk):
+Many modules label **both** `VCC/GND/SDA/SCL` **and** `EDA/ECL/ADO/NCS/…` on the same PCB. **SDA = EDA** and **SCL = ECL** (same copper). Wire **one pad per signal** — do not connect D4 to both SDA and EDA.
 
 | Module label | Connect to | Notes |
 |--------------|------------|-------|
-| **EDA** | XIAO **D4** (SDA, GPIO5) | I2C data — same signal as SDA |
-| **ECL** | XIAO **D5** (SCL, GPIO6) | I2C clock — same signal as SCL |
-| **ADO** | **GND** (0x68) or **3V3** (0x69) | Your working setup: **ADO→GND**, `#define ICM20948_ADDR 0x68` |
-| **NCS** | **3V3** | **Required for I2C** — tie high; disables SPI on shared pins |
-| **INT** | *leave unconnected* | Optional GPIO interrupt; not needed for streaming |
-| **FSYNC** | *leave unconnected* or **GND** | Optional; not used in v1 |
-| **VCC / VDD** | XIAO **3V3** | If no power pin on the header, check **bottom of PCB** |
-| **GND** | XIAO **GND** | Same ground as XIAO |
+| **VCC / VDD** | XIAO **3V3** | 3.3 V only |
+| **GND** | XIAO **GND** | Common ground |
+| **SDA** *or* **EDA** | XIAO **D4** (GPIO5) | I2C data — pick **one** pad |
+| **SCL** *or* **ECL** | XIAO **D5** (GPIO6) | I2C clock — pick **one** pad |
+| **AD0** *or* **ADO** | **GND** (0x68) or **3V3** (0x69) | Your setup: **ADO→GND**, `#define ICM20948_ADDR 0x68` |
+| **NCS** | **3V3** | Required for I2C on boards that expose it |
+| **INT** | NC | Not needed for streaming |
+| **FSYNC** | NC or GND | Optional |
 
-**EDA/ECL are SDA/SCL** under InvenSense naming. Without **NCS→3V3**, the chip may stay in SPI mode and I2C will fail (boot shows `synthetic fallback`). Without visible **VCC/GND**, inspect the back of the breakout before debugging I2C.
+Full diagram: [wiring-diagram.md](wiring-diagram.md#icm-20948-module-labels-eda--ecl-silk)
 
 The sketch uses `PIN_I2C_SDA 5` and `PIN_I2C_SCL 6`, which match the [Seeed pin map](https://wiki.seeedstudio.com/xiao_esp32s3_pin_multiplexing/) for D4/D5. In Arduino IDE, select board **XIAO_ESP32S3** (not a generic ESP32-S3 dev module).
 
@@ -300,7 +300,7 @@ set ESP32_NODE_HOST=<node-ip>
 python host/esp32_tcp_client.py
 ```
 
-**Open Ephys:** Ephys Socket plugin → TCP client → same IP/port and framing.
+**Open Ephys:** Ephys Socket plugin → TCP client → same IP/port and framing. Custom Red Pitaya plugin vs Ephys Socket: [open-ephys-plugin.md](open-ephys-plugin.md).
 
 ## 7. Serial bench mode (no Wi-Fi)
 

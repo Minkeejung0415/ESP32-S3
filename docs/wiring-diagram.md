@@ -40,12 +40,12 @@ flowchart LR
     PD0["D0 / GPIO1 — DIO in"]
   end
 
-  subgraph ICM["ICM-20948 breakout (I2C silk)"]
-    IVCC["VCC / VDD"]
+  subgraph ICM["ICM-20948 breakout"]
+    IVCC["VCC/VDD → 3V3"]
     IGND["GND"]
-    IEDA["EDA (= SDA)"]
-    IECL["ECL (= SCL)"]
-    IADO["ADO (= AD0) → GND"]
+    ISDA["SDA or EDA (one wire)"]
+    ISCL["SCL or ECL (one wire)"]
+    IADO["ADO/AD0 → GND"]
     INCS["NCS → 3V3"]
     IINT["INT — NC"]
     IFSYNC["FSYNC — NC"]
@@ -67,8 +67,8 @@ flowchart LR
   P3V3 --> IVCC
   P3V3 --> INCS
   PGND --> IGND
-  PD4 --> IEDA
-  PD5 --> IECL
+  PD4 --> ISDA
+  PD5 --> ISCL
   IADO --> IGND
   PD0 --- BTN
   BTN --> PGND
@@ -114,20 +114,17 @@ flowchart LR
               │              │   │   │              │
               ▼              ▼   ▼   ▼              ▼
         ┌─────────────────────────────────────────────┐    ┌─────────────┐
-        │  ICM-20948 (EDA/ECL silk — I2C mode)        │    │  Momentary  │
-        │  VCC/VDD ◄── 3V3 (3.3 V — check PCB bottom) │    │   button    │
+        │  ICM-20948 (dual silk — wire each net once) │    │  Momentary  │
+        │  VCC/VDD ◄── 3V3                            │    │   button    │
         │  GND     ◄── GND                            │    │  (optional) │
-        │  EDA     ◄── D4 / GPIO5  (= I2C SDA)        │    └──────┬──────┘
-        │  ECL     ◄── D5 / GPIO6  (= I2C SCL)        │           │
-        │  ADO     ──► GND         (I2C addr 0x68)      │           │
-        │  NCS     ──► 3V3         (REQUIRED — I2C on)  │           │
-        │  INT     ─── NC          (optional)           │           │
-        │  FSYNC   ─── NC or GND   (optional)           │           │
+        │  SDA or EDA ◄── D4 (not both!)              │    └──────┬──────┘
+        │  SCL or ECL ◄── D5 (not both!)              │           │
+        │  AD0/ADO ──► GND  (addr 0x68)               │           │
+        │  NCS ──► 3V3   INT/FSYNC — NC               │           │
         └─────────────────────────────────────────────┘           │
-              ▲                                        │
-              └──────── D0 (GPIO1) ──── button ────────┘
-                         other leg of button → GND
-                         (internal pull-up on D0)
+              ▲                                                    │
+              └──────── D0 (GPIO1) ──── button ────────────────────┘
+                         other leg → GND (internal pull-up on D0)
 
   NOT CONNECTED (v1 default sketch):
     • Second XIAO board     (ENABLE_ESPNOW false)
@@ -140,26 +137,43 @@ flowchart LR
 
 ## ICM-20948 module labels (EDA / ECL silk)
 
-Many breakouts **do not print SDA/SCL/VCC/GND**. TDK/InvenSense-style silk uses **EDA**, **ECL**, **ADO**, **NCS**, **INT**, **FSYNC** instead.
+Many breakouts print **two naming schemes on the same PCB** — they are **the same electrical nets**, not separate buses:
 
-**EDA = I2C SDA** and **ECL = I2C SCL** (same electrical signals as D4/D5 on the XIAO). The chip shares SPI and I2C pins; **NCS must be tied to 3V3** to select I2C mode (chip select high disables SPI).
+| Common silk | InvenSense silk | Same signal |
+|-------------|-----------------|-------------|
+| **SDA** | **EDA** | I2C data → XIAO **D4** / GPIO5 |
+| **SCL** | **ECL** | I2C clock → XIAO **D5** / GPIO6 |
+| **AD0** | **ADO** | I2C address select |
+| **VCC** / **VDD** | *(often only on one row)* | Power → XIAO **3V3** |
+| **GND** | *(often only on one row)* | Ground → XIAO **GND** |
 
-> **Power pins missing on the header?** Some modules only label the six signal pins on top. Check the **bottom of the PCB** or a second row for **VCC**, **VDD**, **3V3**, or **GND** — the IMU cannot respond on I2C without power and ground.
+**Do not duplicate wires** — pick **one** label per function. Example: wire XIAO **D4** to **either** the pad marked **SDA** **or** **EDA**, not both.
 
-### Pin mapping (I2C mode)
+Extra pins on the InvenSense row (not on the simple 4-wire bus):
 
 | Module label | Connect to | Notes |
 |--------------|------------|-------|
-| **EDA** | XIAO **D4** (SDA, GPIO5) | I2C data — same as `PIN_I2C_SDA` |
-| **ECL** | XIAO **D5** (SCL, GPIO6) | I2C clock — same as `PIN_I2C_SCL` |
-| **ADO** | **GND** (0x68) or **3V3** (0x69) | Address select (= AD0). User bench: **ADO→GND → 0x68** |
-| **NCS** | **3V3** | **Required for I2C** — tie high; disables SPI |
-| **INT** | *leave unconnected* | Optional interrupt to a GPIO; not needed for 100 Hz streaming |
-| **FSYNC** | *leave unconnected* or **GND** | Optional external sync; not used in v1 sketch |
-| **VCC / VDD** | XIAO **3V3** | 3.3 V only — **not 5 V**. May be on board bottom if not on header |
-| **GND** | XIAO **GND** | Common ground with XIAO and button |
+| **ADO** (= AD0) | **GND** (0x68) or **3V3** (0x69) | Your working setup: **ADO→GND** |
+| **NCS** | **3V3** | **Required for I2C** — tie high; disables SPI on shared pins |
+| **INT** | *leave unconnected* | Optional GPIO interrupt; not needed for 100 Hz streaming |
+| **FSYNC** | *leave unconnected* or **GND** | Optional; not used in v1 sketch |
 
-Set `#define ICM20948_ADDR 0x68` in the sketch when **ADO→GND** (user-confirmed working address).
+> **Power pins:** If **VCC/GND** are not next to EDA/ECL on the header, they are usually on the **same breakout** under labels **VCC**, **VDD**, **3V3**, or **GND** (sometimes **bottom of PCB**). You still need **one** 3V3 and **one** GND — do not wire both SDA and EDA thinking they are different data lines.
+
+### Pin mapping (I2C mode) — use once per signal
+
+| Module label | Connect to | Notes |
+|--------------|------------|-------|
+| **VCC / VDD** *(or power row)* | XIAO **3V3** | 3.3 V only — **not 5 V** |
+| **GND** | XIAO **GND** | Common ground |
+| **SDA** *or* **EDA** | XIAO **D4** (GPIO5) | I2C data — **one wire only** |
+| **SCL** *or* **ECL** | XIAO **D5** (GPIO6) | I2C clock — **one wire only** |
+| **AD0** *or* **ADO** | **GND** (0x68) or **3V3** (0x69) | Set `#define ICM20948_ADDR 0x68` when ADO→GND |
+| **NCS** | **3V3** | Required on boards that expose it |
+| **INT** | NC | Optional |
+| **FSYNC** | NC or GND | Optional |
+
+Set `#define ICM20948_ADDR 0x68` in the sketch when **ADO/AD0→GND** (user-confirmed working address).
 
 ---
 
