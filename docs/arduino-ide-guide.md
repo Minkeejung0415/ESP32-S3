@@ -51,14 +51,33 @@ See **[wiring-diagram.md](wiring-diagram.md)** for Mermaid/ASCII diagrams and th
 
 | ICM-20948 | Connect to XIAO Sense |
 |-----------|------------------------|
-| VCC | **3V3** (3.3 V — not 5 V) |
+| VCC / VDD | **3V3** (3.3 V — not 5 V; may be on PCB bottom) |
 | GND | **GND** |
-| SDA | **D4** (GPIO **5**, default I2C data) |
-| SCL | **D5** (GPIO **6**, default I2C clock) |
+| SDA *(or **EDA**)* | **D4** (GPIO **5**, I2C data) |
+| SCL *(or **ECL**)* | **D5** (GPIO **6**, I2C clock) |
+| AD0 *(or **ADO**)* | **GND** → addr **0x68**; or **3V3** → **0x69** |
+| **NCS** | **3V3** — **required** on EDA/ECL modules (I2C mode) |
+
+### ICM-20948 pin mapping (I2C mode — EDA/ECL silk)
+
+If your module is labeled **EDA, ECL, ADO, NCS, INT, FSYNC** (no SDA/SCL/VCC/GND on silk):
+
+| Module label | Connect to | Notes |
+|--------------|------------|-------|
+| **EDA** | XIAO **D4** (SDA, GPIO5) | I2C data — same signal as SDA |
+| **ECL** | XIAO **D5** (SCL, GPIO6) | I2C clock — same signal as SCL |
+| **ADO** | **GND** (0x68) or **3V3** (0x69) | Your working setup: **ADO→GND**, `#define ICM20948_ADDR 0x68` |
+| **NCS** | **3V3** | **Required for I2C** — tie high; disables SPI on shared pins |
+| **INT** | *leave unconnected* | Optional GPIO interrupt; not needed for streaming |
+| **FSYNC** | *leave unconnected* or **GND** | Optional; not used in v1 |
+| **VCC / VDD** | XIAO **3V3** | If no power pin on the header, check **bottom of PCB** |
+| **GND** | XIAO **GND** | Same ground as XIAO |
+
+**EDA/ECL are SDA/SCL** under InvenSense naming. Without **NCS→3V3**, the chip may stay in SPI mode and I2C will fail (boot shows `synthetic fallback`). Without visible **VCC/GND**, inspect the back of the breakout before debugging I2C.
 
 The sketch uses `PIN_I2C_SDA 5` and `PIN_I2C_SCL 6`, which match the [Seeed pin map](https://wiki.seeedstudio.com/xiao_esp32s3_pin_multiplexing/) for D4/D5. In Arduino IDE, select board **XIAO_ESP32S3** (not a generic ESP32-S3 dev module).
 
-**I2C address:** `ICM20948_ADDR 0x69` if AD0 is high (often default on breakouts); use **`0x68`** if AD0 is tied to GND.
+**I2C address:** `ICM20948_ADDR 0x68` when **ADO/AD0→GND** (user-confirmed); use **`0x69`** if ADO tied to 3V3.
 
 ### Recommended defines (USB-only)
 

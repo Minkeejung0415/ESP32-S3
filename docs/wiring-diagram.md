@@ -40,12 +40,15 @@ flowchart LR
     PD0["D0 / GPIO1 — DIO in"]
   end
 
-  subgraph ICM["ICM-20948 breakout"]
-    IVCC["VCC"]
+  subgraph ICM["ICM-20948 breakout (I2C silk)"]
+    IVCC["VCC / VDD"]
     IGND["GND"]
-    ISDA["SDA"]
-    ISCL["SCL"]
-    IAD0["AD0 → GND"]
+    IEDA["EDA (= SDA)"]
+    IECL["ECL (= SCL)"]
+    IADO["ADO (= AD0) → GND"]
+    INCS["NCS → 3V3"]
+    IINT["INT — NC"]
+    IFSYNC["FSYNC — NC"]
   end
 
   subgraph DIO["DIO test (Phase 2)"]
@@ -62,10 +65,11 @@ flowchart LR
   PC --> USB
   USB --> MAIN
   P3V3 --> IVCC
+  P3V3 --> INCS
   PGND --> IGND
-  PD4 --> ISDA
-  PD5 --> ISCL
-  IAD0 --> IGND
+  PD4 --> IEDA
+  PD5 --> IECL
+  IADO --> IGND
   PD0 --- BTN
   BTN --> PGND
   SENSE -.->|"no wire"| CAM
@@ -109,14 +113,17 @@ flowchart LR
               ┌──────────┘   │   │   │   └──────────┐
               │              │   │   │              │
               ▼              ▼   ▼   ▼              ▼
-        ┌─────────────────────────────────┐    ┌─────────────┐
-        │     ICM-20948 breakout          │    │  Momentary  │
-        │  VCC ◄── 3V3 (3.3 V only!)      │    │   button    │
-        │  GND ◄── GND                    │    │  (optional) │
-        │  SDA ◄── D4 / GPIO5             │    └──────┬──────┘
-        │  SCL ◄── D5 / GPIO6             │           │
-        │  AD0 ──► GND  (I2C addr 0x68)   │           │
-        └─────────────────────────────────┘           │
+        ┌─────────────────────────────────────────────┐    ┌─────────────┐
+        │  ICM-20948 (EDA/ECL silk — I2C mode)        │    │  Momentary  │
+        │  VCC/VDD ◄── 3V3 (3.3 V — check PCB bottom) │    │   button    │
+        │  GND     ◄── GND                            │    │  (optional) │
+        │  EDA     ◄── D4 / GPIO5  (= I2C SDA)        │    └──────┬──────┘
+        │  ECL     ◄── D5 / GPIO6  (= I2C SCL)        │           │
+        │  ADO     ──► GND         (I2C addr 0x68)      │           │
+        │  NCS     ──► 3V3         (REQUIRED — I2C on)  │           │
+        │  INT     ─── NC          (optional)           │           │
+        │  FSYNC   ─── NC or GND   (optional)           │           │
+        └─────────────────────────────────────────────┘           │
               ▲                                        │
               └──────── D0 (GPIO1) ──── button ────────┘
                          other leg of button → GND
@@ -131,16 +138,43 @@ flowchart LR
 
 ---
 
+## ICM-20948 module labels (EDA / ECL silk)
+
+Many breakouts **do not print SDA/SCL/VCC/GND**. TDK/InvenSense-style silk uses **EDA**, **ECL**, **ADO**, **NCS**, **INT**, **FSYNC** instead.
+
+**EDA = I2C SDA** and **ECL = I2C SCL** (same electrical signals as D4/D5 on the XIAO). The chip shares SPI and I2C pins; **NCS must be tied to 3V3** to select I2C mode (chip select high disables SPI).
+
+> **Power pins missing on the header?** Some modules only label the six signal pins on top. Check the **bottom of the PCB** or a second row for **VCC**, **VDD**, **3V3**, or **GND** — the IMU cannot respond on I2C without power and ground.
+
+### Pin mapping (I2C mode)
+
+| Module label | Connect to | Notes |
+|--------------|------------|-------|
+| **EDA** | XIAO **D4** (SDA, GPIO5) | I2C data — same as `PIN_I2C_SDA` |
+| **ECL** | XIAO **D5** (SCL, GPIO6) | I2C clock — same as `PIN_I2C_SCL` |
+| **ADO** | **GND** (0x68) or **3V3** (0x69) | Address select (= AD0). User bench: **ADO→GND → 0x68** |
+| **NCS** | **3V3** | **Required for I2C** — tie high; disables SPI |
+| **INT** | *leave unconnected* | Optional interrupt to a GPIO; not needed for 100 Hz streaming |
+| **FSYNC** | *leave unconnected* or **GND** | Optional external sync; not used in v1 sketch |
+| **VCC / VDD** | XIAO **3V3** | 3.3 V only — **not 5 V**. May be on board bottom if not on header |
+| **GND** | XIAO **GND** | Common ground with XIAO and button |
+
+Set `#define ICM20948_ADDR 0x68` in the sketch when **ADO→GND** (user-confirmed working address).
+
+---
+
 ## Pin table (sketch v1.3.0)
 
 | Sketch define | GPIO | XIAO pad | Connect to | Firmware channel / role |
 |---------------|------|----------|------------|-------------------------|
-| *(power)* | — | **3V3** | ICM **VCC** | 3.3 V only — **not 5 V** |
-| *(ground)* | — | **GND** | ICM **GND**, button leg | Common ground |
-| `PIN_I2C_SDA` **5** | 5 | **D4** | ICM **SDA** | I2C data → IMU ch0–5 source |
-| `PIN_I2C_SCL` **6** | 6 | **D5** | ICM **SCL** | I2C clock |
+| *(power)* | — | **3V3** | ICM **VCC/VDD**, **NCS** | 3.3 V only — **not 5 V** |
+| *(ground)* | — | **GND** | ICM **GND**, **ADO** (for 0x68), button leg | Common ground |
+| `PIN_I2C_SDA` **5** | 5 | **D4** | ICM **EDA** (= SDA) | I2C data → IMU ch0–5 source |
+| `PIN_I2C_SCL` **6** | 6 | **D5** | ICM **ECL** (= SCL) | I2C clock |
 | `PIN_DIO` **1** | 1 | **D0** | Button → **GND** on press | ch6: bit0=level, bits1–15=edges |
-| `ICM20948_ADDR` | — | — | Set **`0x68`** if AD0→GND; **`0x69`** if AD0→3V3 | Boot I2C scan |
+| `ICM20948_ADDR` | — | — | **`0x68`** if ADO→GND; **`0x69`** if ADO→3V3 | Boot I2C scan |
+| *(module)* | — | — | **NCS → 3V3** | Required for I2C mode on EDA/ECL boards |
+| *(module)* | — | — | **INT**, **FSYNC** unconnected | OK for v1 streaming |
 | `PIN_SD_CS` **21** | 21 | *(Sense)* | **Not wired** (`ENABLE_SD false`) | Phase 4 |
 | *(USB)* | — | **USB-C** | PC | Serial bench @ 115200 |
 
