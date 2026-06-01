@@ -189,29 +189,44 @@ First CSV line is prefixed: `# STEP boot complete icm=OK|FALLBACK`
 
 If you still see sinewave + `az=16384` only → **FALLBACK** (I2C not talking to real chip). Check wiring checklist in [4-wire section](#4-wire-icm20948--usb-to-pc). Optional: install **Adafruit ICM20948** library and swap driver if raw registers fail on your breakout.
 
-## Open Wi-Fi (no password)
+## Open Wi-Fi and phone hotspot
 
-**Repo default (UBC campus):** `WIFI_SSID "ubcvisitor"`, `WIFI_PASS ""`, `ENABLE_TCP true`, `ENABLE_SERIAL_BENCH false`. Upload as-is for Open Ephys TCP on port 5000.
+**Repo default STA credentials** (edit before upload):
 
 ```cpp
+#define WIFI_SSID "YOUR_HOTSPOT"
+#define WIFI_PASS "yourpassword"   // "" for open networks (e.g. ubcvisitor)
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false
-#define WIFI_SSID "ubcvisitor"
-#define WIFI_PASS ""
 ```
 
-The sketch calls `WiFi.begin(WIFI_SSID)` when the password string is empty (`setupWifi()`). Serial Monitor @ 115200 should show `Connecting to open network ubcvisitor`, then `WiFi OK IP=…`, then `TCP listen :5000`. Use that IP in Open Ephys Ephys Socket or `python host/esp32_tcp_client.py`.
+Empty `WIFI_PASS` → `WiFi.begin(WIFI_SSID)` only. On success Serial shows `WiFi OK IP=…` and `TCP listen :5000`.
 
-**UBC visitor caveats:** `ubcvisitor` is an **open** network (no WPA password). Many campus networks use **client isolation** — your PC and the ESP32 may not reach each other even if both show “connected.” If TCP fails, try a phone hotspot or lab router instead. No encryption; do not use for sensitive data.
+### Hotspot troubleshooting (connect timeout)
 
-For a **private lab AP** with no password, change `WIFI_SSID` only:
+If Serial shows dots for ~30 s then **`STA failed (status=…)`**, the board **automatically starts Soft AP** `STEP_ESP32` / password `step1234` and prints **`WiFi OK AP IP=192.168.4.1`**. TCP port **5000** still works.
 
-```cpp
-#define WIFI_SSID "MyOpenAP"
-#define WIFI_PASS ""
+| Check | Action |
+|-------|--------|
+| **2.4 GHz band** | ESP32-S3 cannot join **5 GHz–only** hotspots. iPhone: *Settings → Personal Hotspot → Maximize Compatibility* ON. Android: enable 2.4 GHz / compatibility mode. |
+| **SSID / password** | Must match hotspot exactly (`WL_NO_SSID_AVAIL` = wrong name or hidden 5 GHz). |
+| **Same network** | PC and ESP32 must share one SSID (hotspot or Soft AP). |
+| **Status codes** | `WL_CONNECT_FAILED` → wrong password; `WL_NO_SSID_AVAIL` → SSID not seen (often 5 GHz). |
+| **After timeout** | PC joins **`STEP_ESP32`** / **`step1234`**, host **`192.168.4.1`**, port **5000**. |
+
+**Verify from PC (after WiFi OK or Soft AP):**
+
+```powershell
+ping 192.168.4.1
+set ESP32_NODE_HOST=192.168.4.1
+python host\esp32_tcp_client.py
 ```
 
-**General caveats:** open APs expose traffic to anyone on the same SSID. Do not use on production networks without understanding the risk.
+**Windows:** disable VPN; allow Python through firewall; some corporate Wi-Fi blocks device-to-device traffic (use Soft AP fallback instead).
+
+**Campus `ubcvisitor`:** open network but often **client isolation** — PC cannot reach ESP32 even when both “connected.” Use phone hotspot or Soft AP.
+
+**General:** open/hotspot traffic is not encrypted end-to-end beyond WPA on the hotspot itself.
 
 ## 1. Install Arduino IDE
 
@@ -345,7 +360,8 @@ Same architecture in `firmware/` for teams using **idf.py** (camera hooks, FreeR
 | Issue | Fix |
 |-------|-----|
 | ICM not found | Check wiring, I2C address 0x68/0x69, run with synthetic fallback |
-| No TCP client | Firewall; ping node IP; open Wi-Fi uses `WIFI_PASS ""` |
+| No TCP client | Firewall; `ping` node IP; after timeout use Soft AP `192.168.4.1`; run `host/esp32_tcp_client.py` |
+| Wi-Fi connect timeout | See [Hotspot troubleshooting](#hotspot-troubleshooting-connect-timeout); join `STEP_ESP32` / `step1234` on PC |
 | USB bench empty | `ENABLE_TCP false`, `ENABLE_SERIAL_BENCH true`; use `serial_bench_reader.py` |
 | ESP-NOW no sync | Same RF channel; Wi-Fi must be started before `esp_now_init` |
 | SD fail | Sense CS pin, FAT32 card, `ENABLE_SD` |

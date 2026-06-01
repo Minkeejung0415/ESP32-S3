@@ -4,6 +4,13 @@
  *
  * Guide: docs/arduino-ide-guide.md
  *
+ * --- Wi-Fi connect timeout fallback ---
+ * If STA join fails (30 s), firmware starts Soft AP: SSID STEP_ESP32, pass step1234.
+ * On your PC: join Wi-Fi "STEP_ESP32" (password step1234), then Open Ephys / TCP host 192.168.4.1:5000.
+ *
+ * --- Phone hotspot: use 2.4 GHz band only (ESP32-S3 does not join 5 GHz-only APs). ---
+ * Edit WIFI_SSID / WIFI_PASS below (was ubcvisitor open campus — change for your hotspot).
+ *
  * --- WIRING_4WIRE_ICM + USB to PC (copy-paste preset) ---
  * #define ENABLE_TCP false
  * #define ENABLE_SERIAL_BENCH true
@@ -34,8 +41,14 @@
 
 #define DIO_DEBOUNCE_MS 15   // stable toggle within ~20 ms @ 100 Hz
 
-#define WIFI_SSID "ubcvisitor"
-#define WIFI_PASS ""
+// STA: join your phone/lab hotspot (2.4 GHz). Empty WIFI_PASS = open network (WiFi.begin SSID only).
+#define WIFI_SSID "YOUR_HOTSPOT"
+#define WIFI_PASS "yourpassword"
+
+// Soft AP fallback after STA timeout (automatic — do not need to edit unless renaming lab AP)
+#define WIFI_AP_SSID "STEP_ESP32"
+#define WIFI_AP_PASS "step1234"
+#define WIFI_STA_TIMEOUT_MS 30000
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
@@ -74,6 +87,7 @@ WiFiServer server(TCP_PORT);
 WiFiClient client;
 bool streaming = false;
 bool wifi_up = false;
+bool wifi_soft_ap = false;
 
 uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
@@ -335,30 +349,77 @@ static void handleLine(const String &line) {
   }
 }
 
+static const char *wifiStatusString(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL (SSID not found / wrong name / 5 GHz only?)";
+    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED: return "WL_CONNECTED";
+    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED (wrong password?)";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED";
+    default: return "unknown";
+  }
+}
+
+static void printWifiFailureHelp(wl_status_t status) {
+  Serial.printf("Wi-Fi status=%d (%s)\n", (int)status, wifiStatusString(status));
+  Serial.println("STA tips: 2.4 GHz hotspot band; correct SSID/password; PC and ESP32 same network;");
+  Serial.println("  iPhone: Settings -> Personal Hotspot -> Maximize Compatibility ON");
+}
+
+static bool startSoftApFallback() {
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_AP);
+  bool ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
+  if (!ok) {
+    Serial.println("Soft AP start failed");
+    return false;
+  }
+  wifi_up = true;
+  wifi_soft_ap = true;
+  IPAddress apIp = WiFi.softAPIP();
+  Serial.printf("WiFi OK AP IP=%s  SSID=%s  pass=%s\n",
+                apIp.toString().c_str(), WIFI_AP_SSID, WIFI_AP_PASS);
+  Serial.println("PC: join Wi-Fi STEP_ESP32, then TCP/Open Ephys host 192.168.4.1 port 5000");
+  return true;
+}
+
 static void setupWifi() {
   if (!useWifi()) {
     Serial.println("Wi-Fi skipped — USB serial bench mode");
     return;
   }
+
+  wifi_soft_ap = false;
   WiFi.mode(WIFI_STA);
   if (strlen(WIFI_PASS) == 0) {
-    Serial.printf("Connecting to open network %s\n", WIFI_SSID);
+    Serial.printf("Connecting to open network %s (2.4 GHz)\n", WIFI_SSID);
     WiFi.begin(WIFI_SSID);
   } else {
-    Serial.printf("Connecting to %s", WIFI_SSID);
+    Serial.printf("Connecting to %s (2.4 GHz)\n", WIFI_SSID);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
+
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    if (millis() - t0 > 30000) {
-      Serial.println("\nWi-Fi connect timeout");
+    if (millis() - t0 > (uint32_t)WIFI_STA_TIMEOUT_MS) {
+      Serial.println();
+      wl_status_t st = WiFi.status();
+      printWifiFailureHelp(st);
+      Serial.printf("STA failed (status=%d) — starting Soft AP %s\n", (int)st, WIFI_AP_SSID);
+      startSoftApFallback();
       return;
     }
   }
+
   wifi_up = true;
-  Serial.printf("\nWiFi OK IP=%s\n", WiFi.localIP().toString().c_str());
+  wifi_soft_ap = false;
+  Serial.printf("\nWiFi OK IP=%s  RSSI=%d dBm\n",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI());
 }
 
 static void setupEspNow() {
