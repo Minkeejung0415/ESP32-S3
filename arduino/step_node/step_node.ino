@@ -1,13 +1,19 @@
 /*
  * STEP ESP32-S3 node — Arduino IDE entry point
- * Seeed XIAO ESP32S3: ICM20948 + DIO + ESP-NOW + SD + Open Ephys TCP (Red Pitaya parity)
+ * Seeed XIAO ESP32S3: ICM20948 + DIO + SD + Open Ephys TCP (Red Pitaya parity)
+ * Optional ESP-NOW multi-node sync (off by default — one board is enough for v1).
  *
  * Guide: docs/arduino-ide-guide.md
  */
 
+// ---------- User config (before includes that depend on flags) ----------
+#define ENABLE_ESPNOW false   // true = multi-node sync; v1 bench needs only one board
+
 #include <WiFi.h>
 #include <WiFiClient.h>
+#if ENABLE_ESPNOW
 #include <esp_now.h>
+#endif
 #include <esp_timer.h>
 #include <Wire.h>
 #include <SD.h>
@@ -27,7 +33,7 @@
 #define PIN_DIO 1       // XIAO D0 — change as wired
 #define ICM20948_ADDR 0x69
 
-#define NODE_IS_MASTER true
+#define NODE_IS_MASTER true   // only used when ENABLE_ESPNOW is true
 #define ENABLE_SD false
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false  // true = CSV on Serial @115200, skip TCP
@@ -60,6 +66,7 @@ typedef struct {
   int64_t time_us;
 } SyncPacket;
 
+#if ENABLE_ESPNOW
 void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   (void)info;
   if (len >= (int)sizeof(SyncPacket)) {
@@ -72,6 +79,7 @@ void onEspNowSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   (void)info;
   (void)status;
 }
+#endif
 
 bool icmWrite(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(ICM20948_ADDR);
@@ -118,10 +126,12 @@ int16_t readDio() {
 }
 
 void sendEspNowSync() {
+#if ENABLE_ESPNOW
   if (!NODE_IS_MASTER) return;
   SyncPacket pkt = {seq, (int64_t)esp_timer_get_time()};
   uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   esp_now_send(bcast, (uint8_t *)&pkt, sizeof(pkt));
+#endif
 }
 
 void packAndSendTcp() {
@@ -172,6 +182,7 @@ void setupWifi() {
 }
 
 void setupEspNow() {
+#if ENABLE_ESPNOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
     return;
@@ -183,6 +194,10 @@ void setupEspNow() {
   peer.channel = 0;
   peer.encrypt = false;
   esp_now_add_peer(&peer);
+  Serial.println("ESP-NOW enabled (multi-node)");
+#else
+  Serial.println("ESP-NOW disabled — single-node mode");
+#endif
 }
 
 void setup() {

@@ -1,6 +1,18 @@
 # Arduino IDE — STEP ESP32-S3 Node
 
-Primary bring-up path for v1: **IMU + DIO + ESP-NOW + SD + Open Ephys TCP** on **Seeed XIAO ESP32S3**. Camera and action verification are **deferred to v2** (see [camera-feasibility.md](camera-feasibility.md)).
+Primary bring-up path for v1: **one Seeed XIAO ESP32S3** — IMU + DIO + Open Ephys TCP. **ESP-NOW is optional** (off by default). Camera deferred to v2 ([camera-feasibility.md](camera-feasibility.md)).
+
+## Single board quick test
+
+Use **one** XIAO ESP32S3 only — no second node, no ESP-NOW setup.
+
+1. Open `arduino/step_node/step_node.ino`; confirm **`ENABLE_ESPNOW false`** (default).
+2. Set **`WIFI_SSID`** / **`WIFI_PASS`**; upload to **XIAO_ESP32S3** (USB CDC On Boot enabled).
+3. Serial Monitor @ 115200 → note **`WiFi OK IP=...`** and **`ESP-NOW disabled — single-node mode`**.
+4. **TCP test:** `set ESP32_NODE_HOST=<that IP>` then `python host/esp32_tcp_client.py` (port 5000).
+5. **Or serial bench:** set **`ENABLE_SERIAL_BENCH true`** and **`ENABLE_TCP false`**, re-upload; watch CSV lines on Serial — no Wi-Fi or host required.
+
+When you add a second board later, set **`ENABLE_ESPNOW true`** on both (master + slave) — see §8.
 
 ## 1. Install Arduino IDE
 
@@ -32,7 +44,8 @@ Edit the config block at the top:
 | `PIN_I2C_SDA` / `PIN_I2C_SCL` | ICM-20948 I2C (default D4/D5 → GPIO 5/6) |
 | `PIN_DIO` | Digital input (default D0 → GPIO 1) |
 | `ICM20948_ADDR` | `0x69` or `0x68` if AD0 grounded |
-| `NODE_IS_MASTER` | `true` = ESP-NOW sync master |
+| **`ENABLE_ESPNOW`** | **`false` = single board (default); `true` = multi-node sync** |
+| `NODE_IS_MASTER` | Only when `ENABLE_ESPNOW true` |
 | `ENABLE_SD` | `true` on Sense board with SD wired |
 | `ENABLE_TCP` | Open Ephys TCP server on port 5000 |
 | `ENABLE_SERIAL_BENCH` | `true` = CSV on Serial, no TCP (desk test) |
@@ -115,7 +128,9 @@ seq,ax,ay,az,gx,gy,gz,dio,cam
 
 Plot in Python or compare to Red Pitaya `tcp_client.py` scaling env vars (`ICM_ACCEL_SCALE`, `ICM_GYRO_SCALE`).
 
-## 8. ESP-NOW multi-node
+## 8. ESP-NOW multi-node (optional)
+
+Requires **`ENABLE_ESPNOW true`** on every board. Skip this section for single-board v1 tests.
 
 1. Flash **master** with `NODE_IS_MASTER true`, **slaves** with `false`.
 2. All nodes on same Wi-Fi channel (ESP-NOW init after `WiFi.begin`).

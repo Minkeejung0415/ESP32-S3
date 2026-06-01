@@ -1,25 +1,27 @@
 # ESP32-S3 STEP Acquisition Nodes
 
-Wireless **Seeed XIAO ESP32-S3** nodes for the STEP gait monitoring stack: **ICM-20948** IMU, **DIO**, **ESP-NOW** sync, **SD card** logging, and **Open Ephys–compatible** TCP streaming aligned with the existing **Red Pitaya** path.
+Wireless **Seeed XIAO ESP32-S3** node for the STEP gait stack: **ICM-20948** IMU, **DIO**, **Open Ephys TCP** — one board is enough for v1 bench.
 
-## Quick start (Arduino IDE — recommended for v1)
+## Single board quick test (start here)
 
-1. Open **`arduino/step_node/step_node.ino`**
-2. Follow **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)** — board package, Wi-Fi, flash, TCP test
-3. Run **`python host/esp32_tcp_client.py`** against the node IP (port 5000)
+1. Open **`arduino/step_node/step_node.ino`** — leave **`ENABLE_ESPNOW false`** (default).
+2. Set **`WIFI_SSID`** / **`WIFI_PASS`**, flash **XIAO_ESP32S3** ([full guide](docs/arduino-ide-guide.md)).
+3. Serial Monitor → **`WiFi OK IP=...`**.
+4. **TCP:** `set ESP32_NODE_HOST=<IP>` → `python host/esp32_tcp_client.py`
+5. **Or no Wi-Fi:** `ENABLE_SERIAL_BENCH true`, `ENABLE_TCP false` → CSV on Serial @ 115200.
 
-Camera and IMU-vs-camera verification are **v2**; v1 focuses on IMU + TCP + sync + SD.
+Multi-node **ESP-NOW** is optional later (`ENABLE_ESPNOW true`). Camera is **v2**.
 
 ## Hardware
 
 | Component | v1 target | Notes |
 |-----------|-----------|-------|
-| MCU | Seeed XIAO ESP32-S3 | Arduino sketch in `arduino/` |
+| MCU | Seeed XIAO ESP32-S3 | One board for bench |
 | IMU | ICM-20948 (I2C) | 100 Hz, ch0–5 |
 | DIO | GPIO input | ch6 |
-| Sync | ESP-NOW | Master/slave in sketch |
+| Sync | ESP-NOW (optional) | Off by default |
 | SD | Sense expansion (optional) | `ENABLE_SD` |
-| Camera | **Deferred v2** | Reference: [docs/camera-feasibility.md](docs/camera-feasibility.md) |
+| Camera | **Deferred v2** | [camera-feasibility.md](docs/camera-feasibility.md) |
 
 ## Red Pitaya parity
 
@@ -35,7 +37,7 @@ Camera and IMU-vs-camera verification are **v2**; v1 focuses on IMU + TCP + sync
 
 ## Advanced: ESP-IDF
 
-Same modules in **`firmware/`** for `idf.py` builds (FreeRTOS, optional camera stubs). Use after Arduino bring-up is stable.
+Same modules in **`firmware/`** — menuconfig **STEP_ENABLE_ESPNOW** defaults off for single-node.
 
 ```bash
 cd firmware
@@ -46,15 +48,14 @@ idf.py build flash monitor
 ## Host / Open Ephys / OpenSim
 
 1. Set `ESP32_NODE_HOST` and `ESP32_NODE_PORT=5000`
-2. **`host/esp32_tcp_client.py`** — 8-channel parser (STEP-compatible)
+2. **`host/esp32_tcp_client.py`**
 3. **Open Ephys:** Ephys Socket plugin, TCP client mode
-4. **OpenSim:** host bridge from TCP or SD export (v2)
 
 ## Planning (GSD)
 
 - `.planning/PROJECT.md` — goals
 - `.planning/REQUIREMENTS.md` — v1 vs v2
-- `.planning/ROADMAP.md` — phases (camera = Phase 7 / v2)
+- `.planning/ROADMAP.md` — phases
 
 ## Repository
 

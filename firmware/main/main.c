@@ -33,6 +33,10 @@ static const char *TAG = "main";
 #define CONFIG_STEP_NODE_MASTER 1
 #endif
 
+#ifndef CONFIG_STEP_ENABLE_ESPNOW
+#define CONFIG_STEP_ENABLE_ESPNOW 0
+#endif
+
 static void wifi_init_sta(void)
 {
     esp_netif_init();
@@ -73,7 +77,9 @@ static void acquisition_task(void *arg)
             sample.ch[7] = (int16_t)((sample.ch[7] & 0xFFFE) | (verify & 1));
         }
 
+#if CONFIG_STEP_ENABLE_ESPNOW
         espnow_sync_on_local_frame(sample.seq, sample.timestamp_us);
+#endif
         open_ephys_stream_set_sample(&sample);
         sd_logger_append(&sample);
 
@@ -92,7 +98,12 @@ void app_main(void)
     dio_input_init(1);
     camera_verify_init();
     sd_logger_init();
+#if CONFIG_STEP_ENABLE_ESPNOW
     espnow_sync_init(CONFIG_STEP_NODE_MASTER != 0);
+    ESP_LOGI(TAG, "ESP-NOW enabled (multi-node)");
+#else
+    ESP_LOGI(TAG, "ESP-NOW disabled — single-node mode");
+#endif
 
     open_ephys_stream_start_server(TCP_PORT);
     xTaskCreate(acquisition_task, "acquire", 4096, NULL, 6, NULL);
