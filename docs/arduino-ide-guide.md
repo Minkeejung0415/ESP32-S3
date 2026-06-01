@@ -2,6 +2,8 @@
 
 Primary bring-up path for v1: **one Seeed XIAO ESP32S3** — IMU + DIO + Open Ephys TCP. **ESP-NOW is optional** (off by default). Camera deferred to v2 ([camera-feasibility.md](camera-feasibility.md)).
 
+**Full wiring diagram:** [wiring-diagram.md](wiring-diagram.md) (Mermaid + ASCII, v1.3.0 pin table)
+
 ## Single board quick test
 
 Use **one** XIAO ESP32S3 only — no second node, no ESP-NOW setup.
@@ -44,6 +46,8 @@ Serial Monitor @ 115200 also works for a quick eyeball test. Boot log should sho
 Typical lab setup: **XIAO ESP32-S3 Sense** on USB to the PC, **ICM-20948 on four wires only** (no DIO, SD, camera, or second board).
 
 ### Wiring
+
+See **[wiring-diagram.md](wiring-diagram.md)** for Mermaid/ASCII diagrams and the full v1.3.0 pin table.
 
 | ICM-20948 | Connect to XIAO Sense |
 |-----------|------------------------|

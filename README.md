@@ -17,6 +17,8 @@ See **[4-wire ICM20948 + USB](docs/arduino-ide-guide.md#4-wire-icm20948--usb-to-
 
 Wiring: ICM **VCC→3V3**, **GND→GND**, **SDA→D4**, **SCL→D5**. Flash **XIAO_ESP32S3**, USB CDC enabled:
 
+**Full diagram:** [docs/wiring-diagram.md](docs/wiring-diagram.md)
+
 ```powershell
 python host/serial_bench_reader.py COM5
 ```
@@ -55,6 +57,8 @@ Full steps: **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)**
 | Sync | ESP-NOW (optional) | Off by default |
 | SD | Sense expansion (optional) | `ENABLE_SD` |
 | Camera | **Deferred v2** | [camera-feasibility.md](docs/camera-feasibility.md) |
+
+**Wiring diagram (Mermaid + ASCII):** [docs/wiring-diagram.md](docs/wiring-diagram.md)
 
 ## Red Pitaya parity
 
