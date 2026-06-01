@@ -191,18 +191,27 @@ If you still see sinewave + `az=16384` only → **FALLBACK** (I2C not talking to
 
 ## Open Wi-Fi (no password)
 
-For a **lab access point with no password**:
+**Repo default (UBC campus):** `WIFI_SSID "ubcvisitor"`, `WIFI_PASS ""`, `ENABLE_TCP true`, `ENABLE_SERIAL_BENCH false`. Upload as-is for Open Ephys TCP on port 5000.
 
 ```cpp
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false
+#define WIFI_SSID "ubcvisitor"
+#define WIFI_PASS ""
+```
+
+The sketch calls `WiFi.begin(WIFI_SSID)` when the password string is empty (`setupWifi()`). Serial Monitor @ 115200 should show `Connecting to open network ubcvisitor`, then `WiFi OK IP=…`, then `TCP listen :5000`. Use that IP in Open Ephys Ephys Socket or `python host/esp32_tcp_client.py`.
+
+**UBC visitor caveats:** `ubcvisitor` is an **open** network (no WPA password). Many campus networks use **client isolation** — your PC and the ESP32 may not reach each other even if both show “connected.” If TCP fails, try a phone hotspot or lab router instead. No encryption; do not use for sensitive data.
+
+For a **private lab AP** with no password, change `WIFI_SSID` only:
+
+```cpp
 #define WIFI_SSID "MyOpenAP"
 #define WIFI_PASS ""
 ```
 
-The sketch calls `WiFi.begin(WIFI_SSID)` when the password string is empty. Then TCP test as usual: `python host/esp32_tcp_client.py` with `ESP32_NODE_HOST` set to the node IP.
-
-**Caveats:** no encryption; anyone on the AP can see traffic — lab/isolated network only. Do not use on production or public Wi-Fi.
+**General caveats:** open APs expose traffic to anyone on the same SSID. Do not use on production networks without understanding the risk.
 
 ## 1. Install Arduino IDE
 

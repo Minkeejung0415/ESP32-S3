@@ -34,8 +34,8 @@
 
 #define DIO_DEBOUNCE_MS 15   // stable toggle within ~20 ms @ 100 Hz
 
-#define WIFI_SSID "STEP_ESP32"
-#define WIFI_PASS "changeme"
+#define WIFI_SSID "ubcvisitor"
+#define WIFI_PASS ""
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
@@ -48,8 +48,8 @@
 
 #define NODE_IS_MASTER true
 #define ENABLE_SD false
-#define ENABLE_TCP false
-#define ENABLE_SERIAL_BENCH true
+#define ENABLE_TCP true
+#define ENABLE_SERIAL_BENCH false
 #define SERIAL_OUTPUT_BINARY false
 #define PIN_SD_CS 21
 
