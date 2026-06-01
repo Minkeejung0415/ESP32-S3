@@ -90,10 +90,15 @@ Serial bench active @115200
 Format: CSV seq,ax,ay,az,gx,gy,gz,dio,cam
 ```
 
-- **`ICM20948: OK`** — WHO_AM_I read succeeded (chip returns **0xEA**; sketch logs a warning if the value differs but still marks OK when I2C responds).
+- **`ICM20948: OK at I2C 0x69 WHO_AM_I=0xEA`** — real chip; CSV should show changing ax/ay/az (not fixed sinewave)
 - **`ICM20948: synthetic fallback`** — no I2C ACK: check VCC/GND, SDA/SCL on **D4/D5**, address 0x68 vs 0x69, and 3.3 V only.
 
-Then CSV samples stream @ 100 Hz, e.g. `0,1000,500,16384,0,0,0,1,0`.
+After **5 s pause**, first data line:
+
+```
+# STEP boot complete icm=OK addr=0x69
+0,<real ax>,<real ay>,...
+```
 
 **DIO (ch6):** `PIN_DIO` defaults to D0 with internal pull-up. If nothing is wired, ch6 may sit at 0 or 1 — harmless for IMU-only tests.
 
@@ -105,6 +110,20 @@ python host/serial_bench_reader.py COM5
 ```
 
 Replace `COM5` with your port. Close Serial Monitor first if the port is busy.
+
+### Serial Monitor shows only numbers (no boot text)
+
+**Cause:** USB CDC often connects *after* the board has already printed boot lines, or CSV scrolls text away immediately.
+
+**Fix (built into firmware v1.2+):**
+1. **Tools → USB CDC On Boot → Enabled**; baud **115200**
+2. Press **Reset** on the board *after* opening Serial Monitor (or re-upload)
+3. Wait **5 seconds** — CSV is paused so diagnostics stay visible
+4. You should see the `BOOT DIAGNOSTICS` banner, I2C scan, and `ICM20948: OK` or `synthetic fallback`
+
+First CSV line is prefixed: `# STEP boot complete icm=OK|FALLBACK`
+
+If you still see sinewave + `az=16384` only → **FALLBACK** (I2C not talking to real chip). Check wiring checklist in [4-wire section](#4-wire-icm20948--usb-to-pc). Optional: install **Adafruit ICM20948** library and swap driver if raw registers fail on your breakout.
 
 ## Open Wi-Fi (no password)
 

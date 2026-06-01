@@ -1,15 +1,10 @@
 /*
  * STEP ESP32-S3 node — Arduino IDE entry point
  * Seeed XIAO ESP32S3: ICM20948 + DIO + SD + Open Ephys TCP (Red Pitaya parity)
- * Optional ESP-NOW multi-node sync (off by default — one board is enough for v1).
  *
  * Guide: docs/arduino-ide-guide.md
  *
  * --- WIRING_4WIRE_ICM + USB to PC (copy-paste preset) ---
- * Hardware: XIAO ESP32-S3 Sense, ICM20948 on 4 wires only (no DIO/SD/camera).
- *   ICM VCC -> 3V3    ICM GND -> GND    ICM SDA -> D4 (GPIO5)
- *   ICM SCL -> D5 (GPIO6)    AD0 high -> I2C 0x69, AD0 low -> 0x68
- * Arduino: Board = XIAO_ESP32S3, USB CDC On Boot = Enabled
  * #define ENABLE_TCP false
  * #define ENABLE_SERIAL_BENCH true
  * #define ENABLE_ESPNOW false
@@ -18,8 +13,7 @@
  * --- end preset ---
  */
 
-// ---------- User config (before includes that depend on flags) ----------
-#define ENABLE_ESPNOW false   // true = multi-node sync; v1 bench needs only one board
+#define ENABLE_ESPNOW false
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -33,32 +27,36 @@
 #include <math.h>
 #include <string.h>
 
-// ---------- User config ----------
+#define FIRMWARE_VERSION "1.2.0"
+#define BOOT_CSV_DELAY_MS 5000
+#define REPEAT_STATUS_SEC 10
+#define BOOT_DIAGNOSTICS true
+
 #define WIFI_SSID "STEP_ESP32"
-#define WIFI_PASS "changeme"       // "" = open network (no password); lab use only
+#define WIFI_PASS "changeme"
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
 #define NUM_CHANNELS 8
 
-#define PIN_I2C_SDA 5   // XIAO pad D4 — hardware I2C SDA (Seeed wiki: GPIO5)
-#define PIN_I2C_SCL 6   // XIAO pad D5 — hardware I2C SCL (Seeed wiki: GPIO6)
-#define PIN_DIO 1       // XIAO D0 — optional; floating OK if unconnected (ch6)
+#define PIN_I2C_SDA 5   // XIAO D4 / GPIO5
+#define PIN_I2C_SCL 6   // XIAO D5 / GPIO6
+#define PIN_DIO 1
 #define ICM20948_ADDR 0x69
 
-#define NODE_IS_MASTER true   // only used when ENABLE_ESPNOW is true
+#define NODE_IS_MASTER true
 #define ENABLE_SD false
 #define ENABLE_TCP true
-#define ENABLE_SERIAL_BENCH false  // true = stream samples over USB Serial @115200
-
-// USB-only bench: ENABLE_TCP false + ENABLE_SERIAL_BENCH true (Wi-Fi skipped automatically)
-// SERIAL_OUTPUT_BINARY true = Open Ephys 22-byte header + int16 payload on Serial (not CSV)
+#define ENABLE_SERIAL_BENCH false
 #define SERIAL_OUTPUT_BINARY false
-
-// SD (XIAO ESP32S3 Sense expansion — adjust if your wiring differs)
 #define PIN_SD_CS 21
 
-// ---------- Open Ephys header (22 bytes LE) ----------
+#define ICM_REG_BANK_SEL 0x7F
+#define ICM_WHO_AM_I 0x00
+#define ICM_PWR_MGMT_1 0x06
+#define ICM_ACCEL_XOUT_H 0x2D
+#define ICM20948_WHOAMI_VAL 0xEA
+
 #pragma pack(push, 1)
 struct OeHeader {
   int32_t offset;
@@ -78,10 +76,12 @@ bool wifi_up = false;
 uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
 bool icm_ok = false;
+uint8_t icm_addr = ICM20948_ADDR;
+uint32_t boot_ms = 0;
+bool csv_banner_sent = false;
+uint32_t last_status_ms = 0;
 
-static bool useWifi() {
-  return ENABLE_TCP || ENABLE_ESPNOW;
-}
+static bool useWifi() { return ENABLE_TCP || ENABLE_ESPNOW; }
 
 typedef struct {
   uint32_t seq;
@@ -90,63 +90,142 @@ typedef struct {
 
 #if ENABLE_ESPNOW
 void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  (void)info;
-  if (len >= (int)sizeof(SyncPacket)) {
-    const SyncPacket *p = (const SyncPacket *)data;
-    (void)p;
-  }
+  (void)info; (void)data; (void)len;
 }
-
 void onEspNowSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  (void)info;
-  (void)status;
+  (void)info; (void)status;
 }
 #endif
 
-bool icmWrite(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(ICM20948_ADDR);
+static bool i2cProbe(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+static bool icmWriteAddr(uint8_t addr, uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(addr);
   Wire.write(reg);
   Wire.write(val);
   return Wire.endTransmission() == 0;
 }
 
-bool icmRead(uint8_t reg, uint8_t *val) {
-  Wire.beginTransmission(ICM20948_ADDR);
+static bool icmReadAddr(uint8_t addr, uint8_t reg, uint8_t *val) {
+  Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(ICM20948_ADDR, (uint8_t)1) != 1) return false;
+  if (Wire.requestFrom(addr, (uint8_t)1) != 1) return false;
   *val = Wire.read();
   return true;
 }
 
-bool initIcm20948() {
+static void icmSelectBank(uint8_t addr, uint8_t bank) {
+  icmWriteAddr(addr, ICM_REG_BANK_SEL, bank & 0x30);
+}
+
+static bool icmReadWhoAmI(uint8_t addr, uint8_t *who) {
+  icmSelectBank(addr, 0);
+  return icmReadAddr(addr, ICM_WHO_AM_I, who);
+}
+
+static bool icmWrite(uint8_t reg, uint8_t val) {
+  return icmWriteAddr(icm_addr, reg, val);
+}
+
+static bool icmReadReg(uint8_t reg, uint8_t *val) {
+  return icmReadAddr(icm_addr, reg, val);
+}
+
+static void printBootDiagnostics() {
+#if BOOT_DIAGNOSTICS
+  Serial.println();
+  Serial.println("========================================");
+  Serial.println("  STEP ESP32-S3 NODE — BOOT DIAGNOSTICS");
+  Serial.println("========================================");
+  Serial.printf("Firmware: %s\n", FIRMWARE_VERSION);
+  Serial.printf("Board target: XIAO_ESP32S3 (Sense)\n");
+  Serial.printf("I2C SDA: GPIO%d (pad D4)  SCL: GPIO%d (pad D5)\n", PIN_I2C_SDA, PIN_I2C_SCL);
+  Serial.printf("ICM20948 config addr: 0x%02X (AD0 high=0x69, low=0x68)\n", ICM20948_ADDR);
+  Serial.printf("Sample rate: %d Hz  channels: %d\n", SAMPLE_HZ, NUM_CHANNELS);
+  Serial.println("--- I2C scan 0x68-0x6B ---");
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
-  uint8_t who = 0;
-  if (!icmRead(0x00, &who)) return false;
-  if (who != 0xEA) {
-    Serial.printf("ICM20948 WHO_AM_I=0x%02X (expected 0xEA)\n", who);
+  delay(50);
+  int found = 0;
+  for (uint8_t a = 0x68; a <= 0x6B; a++) {
+    if (i2cProbe(a)) {
+      Serial.printf("  device at 0x%02X\n", a);
+      found++;
+    }
   }
-  icmWrite(0x06, 0x01);
+  if (found == 0) Serial.println("  (no devices — check VCC/GND/SDA/SCL on D4/D5)");
+  Serial.println("--- ICM20948 WHO_AM_I (expect 0xEA) ---");
+  for (uint8_t a : {0x68, 0x69}) {
+    uint8_t who = 0;
+    if (icmReadWhoAmI(a, &who)) {
+      Serial.printf("  0x%02X -> WHO_AM_I 0x%02X %s\n", a, who,
+                    who == ICM20948_WHOAMI_VAL ? "OK" : "unexpected");
+    } else {
+      Serial.printf("  0x%02X -> no ACK\n", a);
+    }
+  }
+  Serial.println("========================================");
+#endif
+}
+
+static bool initIcm20948() {
+  const uint8_t candidates[] = {ICM20948_ADDR, 0x68, 0x69};
+  for (uint8_t a : candidates) {
+    uint8_t who = 0;
+    if (!icmReadWhoAmI(a, &who)) continue;
+    if (who != ICM20948_WHOAMI_VAL) {
+      Serial.printf("ICM20948 at 0x%02X WHO_AM_I=0x%02X (expected 0xEA)\n", a, who);
+      continue;
+    }
+    icm_addr = a;
+    icmSelectBank(icm_addr, 0);
+    icmWriteAddr(icm_addr, ICM_PWR_MGMT_1, 0x01);
+    delay(100);
+    Serial.printf("ICM20948: OK at I2C 0x%02X WHO_AM_I=0xEA\n", icm_addr);
+    return true;
+  }
+  Serial.println("ICM20948: synthetic fallback — no chip at 0x68/0x69 with WHO_AM_I 0xEA");
+  return false;
+}
+
+static bool readImuRaw(int16_t out[6]) {
+  icmSelectBank(icm_addr, 0);
+  Wire.beginTransmission(icm_addr);
+  Wire.write(ICM_ACCEL_XOUT_H);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(icm_addr, (uint8_t)14) != 14) return false;
+
+  auto read16be = []() {
+    int16_t v = (int16_t)(Wire.read() << 8);
+    v |= Wire.read();
+    return v;
+  };
+  out[0] = read16be();
+  out[1] = read16be();
+  out[2] = read16be();
+  (void)read16be();
+  out[3] = read16be();
+  out[4] = read16be();
+  out[5] = read16be();
   return true;
 }
 
-void readImu(int16_t out[6]) {
-  if (!icm_ok) {
-    float t = millis() * 0.01f;
-    out[0] = (int16_t)(1000 * sinf(t));
-    out[1] = (int16_t)(500 * cosf(t));
-    out[2] = 16384;
-    out[3] = out[4] = out[5] = 0;
-    return;
-  }
-  for (int i = 0; i < 6; i++) out[i] = 0;
+static void readImu(int16_t out[6]) {
+  if (icm_ok && readImuRaw(out)) return;
+
+  float t = millis() * 0.01f;
+  out[0] = (int16_t)(1000 * sinf(t));
+  out[1] = (int16_t)(500 * cosf(t));
+  out[2] = 16384;
+  out[3] = out[4] = out[5] = 0;
 }
 
-int16_t readDio() {
-  return (int16_t)digitalRead(PIN_DIO);
-}
+static int16_t readDio() { return (int16_t)digitalRead(PIN_DIO); }
 
-void fillOeHeader(OeHeader *hdr) {
+static void fillOeHeader(OeHeader *hdr) {
   hdr->offset = 0;
   hdr->num_channels = NUM_CHANNELS;
   hdr->samples_per_channel = 1;
@@ -155,26 +234,32 @@ void fillOeHeader(OeHeader *hdr) {
   hdr->num_bytes = NUM_CHANNELS * 1 * 2;
 }
 
-void sendEspNowSync() {
 #if ENABLE_ESPNOW
+static void sendEspNowSync() {
   if (!NODE_IS_MASTER || !wifi_up) return;
   SyncPacket pkt = {seq, (int64_t)esp_timer_get_time()};
   uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   esp_now_send(bcast, (uint8_t *)&pkt, sizeof(pkt));
-#endif
 }
+#else
+static void sendEspNowSync() {}
+#endif
 
-void packAndSendTcp() {
+static void packAndSendTcp() {
   if (!client || !client.connected() || !streaming) return;
-
   OeHeader hdr;
   fillOeHeader(&hdr);
   client.write((uint8_t *)&hdr, sizeof(hdr));
   client.write((uint8_t *)channels, sizeof(channels));
 }
 
-void sendSerialBench() {
+static void sendSerialBench() {
 #if ENABLE_SERIAL_BENCH
+  if (!csv_banner_sent) {
+    Serial.printf("# STEP boot complete icm=%s addr=0x%02X\n",
+                  icm_ok ? "OK" : "FALLBACK", icm_addr);
+    csv_banner_sent = true;
+  }
 #if SERIAL_OUTPUT_BINARY
   OeHeader hdr;
   fillOeHeader(&hdr);
@@ -188,7 +273,7 @@ void sendSerialBench() {
 #endif
 }
 
-void logSd() {
+static void logSd() {
 #if ENABLE_SD
   if (!SD.begin(PIN_SD_CS)) return;
   File f = SD.open("/step_session.bin", FILE_APPEND);
@@ -200,7 +285,7 @@ void logSd() {
 #endif
 }
 
-void handleLine(const String &line) {
+static void handleLine(const String &line) {
   if (line.startsWith("REDPITAYA")) {
     client.print("8 channels; sample_rate=100; node=esp32s3_arduino\n");
   } else if (line.startsWith("START")) {
@@ -209,26 +294,24 @@ void handleLine(const String &line) {
   }
 }
 
-void setupWifi() {
+static void setupWifi() {
   if (!useWifi()) {
     Serial.println("Wi-Fi skipped — USB serial bench mode");
     return;
   }
-
   WiFi.mode(WIFI_STA);
   if (strlen(WIFI_PASS) == 0) {
-    Serial.printf("Connecting to open network %s (no password)\n", WIFI_SSID);
+    Serial.printf("Connecting to open network %s\n", WIFI_SSID);
     WiFi.begin(WIFI_SSID);
   } else {
     Serial.printf("Connecting to %s", WIFI_SSID);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
-
-  uint32_t start = millis();
+  uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    if (millis() - start > 30000) {
+    if (millis() - t0 > 30000) {
       Serial.println("\nWi-Fi connect timeout");
       return;
     }
@@ -237,21 +320,17 @@ void setupWifi() {
   Serial.printf("\nWiFi OK IP=%s\n", WiFi.localIP().toString().c_str());
 }
 
-void setupEspNow() {
+static void setupEspNow() {
 #if ENABLE_ESPNOW
   if (!wifi_up) {
     Serial.println("ESP-NOW skipped (Wi-Fi not connected)");
     return;
   }
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW init failed");
-    return;
-  }
+  esp_now_init();
   esp_now_register_recv_cb(onEspNowRecv);
   esp_now_register_send_cb(onEspNowSent);
   esp_now_peer_info_t peer = {};
   memset(&peer.peer_addr, 0xFF, 6);
-  peer.channel = 0;
   peer.encrypt = false;
   esp_now_add_peer(&peer);
   Serial.println("ESP-NOW enabled (multi-node)");
@@ -260,21 +339,35 @@ void setupEspNow() {
 #endif
 }
 
+static void maybeRepeatFallbackStatus() {
+#if REPEAT_STATUS_SEC > 0
+  if (icm_ok) return;
+  if (millis() - last_status_ms < (uint32_t)REPEAT_STATUS_SEC * 1000UL) return;
+  last_status_ms = millis();
+  Serial.println("ICM20948: synthetic fallback — check 3V3, GND, SDA->D4, SCL->D5, addr 0x68/0x69");
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  delay(3000);
+  while (!Serial && millis() < 5000) {
+    delay(10);
+  }
+
+  Serial.println();
   Serial.println("STEP node (Arduino) starting");
 
   pinMode(PIN_DIO, INPUT_PULLUP);
+
+  printBootDiagnostics();
   icm_ok = initIcm20948();
-  Serial.printf("ICM20948: %s\n", icm_ok ? "OK" : "synthetic fallback");
 
   setupWifi();
   setupEspNow();
 
 #if ENABLE_SD
-  if (SD.begin(PIN_SD_CS)) Serial.println("SD ready");
-  else Serial.println("SD init failed");
+  Serial.println(SD.begin(PIN_SD_CS) ? "SD ready" : "SD init failed");
 #endif
 
 #if ENABLE_TCP && !ENABLE_SERIAL_BENCH
@@ -284,12 +377,14 @@ void setup() {
   }
 #elif ENABLE_SERIAL_BENCH
   Serial.println("Serial bench active @115200");
-#if SERIAL_OUTPUT_BINARY
-  Serial.println("Format: Open Ephys binary (22-byte header + int16 x8)");
-#else
-  Serial.println("Format: CSV seq,ax,ay,az,gx,gy,gz,dio,cam");
+  Serial.println(SERIAL_OUTPUT_BINARY
+                     ? "Format: Open Ephys binary on Serial"
+                     : "Format: CSV seq,ax,ay,az,gx,gy,gz,dio,cam");
 #endif
-#endif
+
+  boot_ms = millis();
+  Serial.printf("CSV/stream paused %d ms — read diagnostics above\n", BOOT_CSV_DELAY_MS);
+  last_status_ms = millis();
 }
 
 void loop() {
@@ -309,6 +404,12 @@ void loop() {
     }
   }
 #endif
+
+  maybeRepeatFallbackStatus();
+
+  if (millis() - boot_ms < (uint32_t)BOOT_CSV_DELAY_MS) {
+    return;
+  }
 
   static uint32_t last_us = 0;
   uint32_t now = micros();
