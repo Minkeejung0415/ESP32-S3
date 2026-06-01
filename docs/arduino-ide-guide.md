@@ -228,6 +228,51 @@ python host\esp32_tcp_client.py
 
 **General:** open/hotspot traffic is not encrypted end-to-end beyond WPA on the hotspot itself.
 
+## PC cannot join STEP_ESP32 (USB bridge — no Wi-Fi)
+
+Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32`) or when **PC↔ESP32 Wi-Fi is impossible** (VPN, corporate drivers, client isolation). **IMU stays on 4 wires + USB only** — no hotspot, no joining the ESP32 AP.
+
+### Why Soft AP fails on Windows
+
+- Some Wi-Fi drivers **refuse ad-hoc / ESP Soft AP** connections or connect then drop.
+- **VPN** (Cisco, GlobalProtect, etc.) captures routes and blocks local AP traffic.
+- **Corporate / campus Wi-Fi** policies disable “connect to device AP” profiles.
+- Wrong password, cached “forget network”, or PC on **5 GHz–only** adapter while ESP AP is 2.4 GHz.
+- **USB phone tethering** gives the PC internet but does **not** put the PC on the ESP32’s `STEP_ESP32` network — still no path to `192.168.4.1`.
+
+**Brief Soft AP fixes to try:** exact SSID `STEP_ESP32`, password `step1234`, forget old network entry, disable VPN, use a 2.4 GHz–capable adapter, reboot board after timeout message. If none work → USB bridge below.
+
+### USB Open Ephys bridge workflow
+
+1. **Sketch** — copy **USB_OPEN_EPHYS_MODE** from `arduino/step_node/step_node.ino` header:
+   ```cpp
+   #define ENABLE_TCP false
+   #define ENABLE_SERIAL_BENCH true
+   #define SERIAL_OUTPUT_BINARY true
+   #define ENABLE_ESPNOW false
+   #define ENABLE_SD false
+   ```
+2. **Flash** XIAO (USB CDC On Boot enabled). Serial should show `Wi-Fi skipped` and `Format: Open Ephys binary on Serial`.
+3. **Close Serial Monitor** (COM port is exclusive).
+4. **Bridge on PC:**
+   ```powershell
+   pip install pyserial
+   python host\serial_tcp_bridge.py COM5
+   ```
+   Replace `COM5` with your port (Device Manager). Optional: `set SERIAL_PORT=COM5`.
+5. **Open Ephys:** add **Ephys Socket** → TCP client → **`127.0.0.1`** port **`5000`** (not the ESP32 IP). Handshake `REDPITAYA` / `START` is handled by the bridge.
+
+The bridge reads Open Ephys **binary frames** from USB and serves them on **localhost:5000**. It also forwards `REDPITAYA` / `START` lines to serial for logging. Test without Open Ephys:
+
+```powershell
+python host\esp32_tcp_client.py
+set ESP32_NODE_HOST=127.0.0.1
+```
+
+(`esp32_tcp_client.py` is unchanged — point it at `127.0.0.1` while the bridge runs.)
+
+**CSV fallback** (if binary not enabled): `python host\serial_tcp_bridge.py COM5 --csv`
+
 ## 1. Install Arduino IDE
 
 1. Install [Arduino IDE 2.x](https://www.arduino.cc/en/software).

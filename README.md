@@ -83,7 +83,8 @@ Same modules in **`firmware/`** — menuconfig **STEP_ENABLE_ESPNOW** defaults o
 | Script | Use when |
 |--------|----------|
 | `host/serial_bench_reader.py COMx` | USB serial bench (no Wi-Fi) |
-| `host/esp32_tcp_client.py` | TCP over Wi-Fi |
+| `host/serial_tcp_bridge.py COMx` | USB → localhost:5000 for Open Ephys (no Wi-Fi) |
+| `host/esp32_tcp_client.py` | TCP test (Wi-Fi node or 127.0.0.1 via bridge) |
 
 ## Repository
 

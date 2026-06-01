@@ -18,6 +18,16 @@
  * #define ENABLE_SD false
  * #define ICM20948_ADDR 0x69
  * --- end preset ---
+ *
+ * --- USB_OPEN_EPHYS_MODE (no Wi-Fi — PC cannot join STEP_ESP32) ---
+ * Run on PC: python host/serial_tcp_bridge.py COM5
+ * Open Ephys Ephys Socket → 127.0.0.1:5000
+ * #define ENABLE_TCP false
+ * #define ENABLE_SERIAL_BENCH true
+ * #define SERIAL_OUTPUT_BINARY true
+ * #define ENABLE_ESPNOW false
+ * #define ENABLE_SD false
+ * --- end USB_OPEN_EPHYS_MODE ---
  */
 
 #define ENABLE_ESPNOW false
