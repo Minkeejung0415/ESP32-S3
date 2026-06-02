@@ -66,20 +66,39 @@ def pack_csv_row(fields: list[str]) -> bytes | None:
     return hdr + struct.pack("<8h", *ch)
 
 
+def payload_bytes_from_header(hdr: tuple) -> int | None:
+    """Bytes in payload; must match Open Ephys num_bytes and fixed read size."""
+    _off, num_bytes, _bit_depth, elem, n_ch, n_per = hdr
+    if elem <= 0 or n_ch <= 0 or n_per <= 0:
+        return None
+    expected = n_ch * n_per * elem
+    return expected if num_bytes == expected else None
+
+
 def is_valid_header(hdr: tuple) -> bool:
-    _off, num_bytes, bit_depth, elem, n_ch, n_per = hdr
+    """Reject mis-synced headers before TCP (OE compareHeaders is strict)."""
+    _off, _num_bytes, bit_depth, elem, n_ch, n_per = hdr
+    if elem != 2 or n_ch > 256 or n_per > 65536:
+        return False
+    if bit_depth > 6:  # OpenCV Mat depth enum 0..6
+        return False
+    expected = payload_bytes_from_header(hdr)
+    return expected is not None and expected <= 4096
+
+
+def header_fields(frame: bytes) -> str:
+    if len(frame) < HEADER_SIZE:
+        return f"<{len(frame)} bytes>"
+    hdr = HEADER.unpack_from(frame, 0)
     return (
-        elem == 2
-        and bit_depth in (OE_BIT_DEPTH_S16, 16)
-        and n_ch == 8
-        and n_per == 1
-        and num_bytes == FRAME_PAYLOAD
+        f"offset={hdr[0]} num_bytes={hdr[1]} bit_depth={hdr[2]} "
+        f"element_size={hdr[3]} n_channels={hdr[4]} n_samples_per_channel={hdr[5]}"
     )
 
 
 def normalize_frame_for_oe(frame: bytes) -> bytes:
     """Ephys Socket expects bit_depth=3 (S16 enum), not legacy 16."""
-    if len(frame) < FRAME_SIZE:
+    if len(frame) < HEADER_SIZE:
         return frame
     hdr = HEADER.unpack_from(frame, 0)
     if hdr[2] == OE_BIT_DEPTH_S16:
@@ -160,6 +179,16 @@ class SerialFrameSource:
             time.sleep(0.01)
         return None
 
+    def wait_for_frames(self, timeout: float) -> bool:
+        """Block until at least one parsed frame is queued (does not dequeue)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._queue:
+                    return True
+            time.sleep(0.05)
+        return False
+
     def drain(self) -> None:
         with self._lock:
             self._queue.clear()
@@ -214,13 +243,19 @@ class SerialFrameSource:
     def _parse_binary(self) -> None:
         while len(self._buf) >= HEADER_SIZE:
             hdr = HEADER.unpack_from(self._buf, 0)
+            _off, num_bytes, _bd, elem, _n_ch, _n_per = hdr
             if not is_valid_header(hdr):
                 del self._buf[0]
                 continue
-            if len(self._buf) < FRAME_SIZE:
+            expected = payload_bytes_from_header(hdr)
+            if expected is None:
+                del self._buf[0]
+                continue
+            total = HEADER_SIZE + expected
+            if len(self._buf) < total:
                 break
-            frame = bytes(self._buf[:FRAME_SIZE])
-            del self._buf[:FRAME_SIZE]
+            frame = bytes(self._buf[:total])
+            del self._buf[:total]
             self._push_frame(frame)
 
 
@@ -234,19 +269,23 @@ async def handle_client(
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    verbose: bool = False,
+    verbose_frames: int = 5,
 ) -> None:
     peer = writer.get_extra_info("peername")
     logger.info("TCP client connected: %s", peer)
     try:
         # Ephys Socket reads binary immediately; esp32_tcp_client sends REDPITAYA/START first.
         try:
-            peek = await asyncio.wait_for(reader.read(256), timeout=0.4)
+            peek = await asyncio.wait_for(reader.read(256), timeout=0.05)
         except asyncio.TimeoutError:
             peek = b""
 
         if not peek:
             logger.info("Ephys Socket mode — streaming binary (no handshake)")
-            await stream_frames(reader, writer, source, first_frame_timeout)
+            await stream_frames(
+                writer, source, first_frame_timeout, verbose, verbose_frames
+            )
             return
 
         first_line = peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
@@ -263,7 +302,9 @@ async def handle_client(
                     logger.info("START — forwarding serial stream")
                     source.write_line("START\n")
                     source.drain()
-                    await stream_frames(reader, writer, source, first_frame_timeout)
+                    await stream_frames(
+                        writer, source, first_frame_timeout, verbose, verbose_frames
+                    )
                     break
             return
 
@@ -271,7 +312,9 @@ async def handle_client(
             "Streaming binary for Open Ephys (%d byte client peek)",
             len(peek),
         )
-        await stream_frames(reader, writer, source, first_frame_timeout)
+        await stream_frames(
+            writer, source, first_frame_timeout, verbose, verbose_frames
+        )
     except asyncio.TimeoutError:
         logger.warning("client idle timeout")
     except ConnectionResetError:
@@ -286,28 +329,59 @@ async def handle_client(
 
 
 async def stream_frames(
-    reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    verbose: bool = False,
+    verbose_frames: int = 5,
 ) -> None:
+    """Forward serial frames until the TCP peer closes (Ephys Socket is read-only)."""
     loop = asyncio.get_event_loop()
     first_frame = True
     warned_no_frames = False
-    while not reader.at_eof():
-        timeout = first_frame_timeout if first_frame else 1.0
-        frame = await loop.run_in_executor(None, source.get_frame, timeout)
-        if frame is None:
-            if first_frame and not warned_no_frames:
-                warned_no_frames = True
-                hint = source.diagnostic_hint()
-                logger.warning("no serial frames yet — %s", hint or "unknown cause")
-            continue
-        if first_frame:
-            logger.info("first Open Ephys frame from serial (%d bytes)", len(frame))
-        first_frame = False
-        writer.write(normalize_frame_for_oe(frame))
-        await writer.drain()
+    sent = 0
+    try:
+        while True:
+            timeout = first_frame_timeout if first_frame else 1.0
+            frame = await loop.run_in_executor(None, source.get_frame, timeout)
+            if frame is None:
+                if first_frame and not warned_no_frames:
+                    warned_no_frames = True
+                    hint = source.diagnostic_hint()
+                    logger.warning("no serial frames yet — %s", hint or "unknown cause")
+                continue
+            frame = normalize_frame_for_oe(frame)
+            if len(frame) < HEADER_SIZE:
+                continue
+            hdr = HEADER.unpack_from(frame, 0)
+            if not is_valid_header(hdr):
+                logger.warning("dropping serial frame with invalid header: %s", header_fields(frame))
+                continue
+            expected = payload_bytes_from_header(hdr)
+            if expected is None or len(frame) != HEADER_SIZE + expected:
+                logger.warning(
+                    "dropping serial frame with length %d (expected %d): %s",
+                    len(frame),
+                    HEADER_SIZE + expected,
+                    header_fields(frame),
+                )
+                continue
+            if first_frame:
+                logger.info(
+                    "first Open Ephys frame from serial (%d bytes) — %s",
+                    len(frame),
+                    header_fields(frame),
+                )
+            elif verbose and sent < verbose_frames:
+                logger.info("frame %d: %s", sent + 1, header_fields(frame))
+            first_frame = False
+            writer.write(frame)
+            await writer.drain()
+            sent += 1
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        pass
+    if sent > 1:
+        logger.info("stream ended after %d frames", sent)
 
 
 async def run_server(
@@ -315,9 +389,13 @@ async def run_server(
     port: int,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    verbose: bool,
+    verbose_frames: int,
 ) -> None:
     server = await asyncio.start_server(
-        lambda r, w: handle_client(r, w, source, first_frame_timeout),
+        lambda r, w: handle_client(
+            r, w, source, first_frame_timeout, verbose, verbose_frames
+        ),
         bind,
         port,
     )
@@ -351,6 +429,17 @@ def main() -> None:
         default=float(os.environ.get("BRIDGE_FIRST_FRAME_TIMEOUT", DEFAULT_FIRST_FRAME_TIMEOUT)),
         help="Seconds to wait for the first serial frame (covers 5 s boot delay)",
     )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Log Open Ephys header fields for the first N TCP frames",
+    )
+    p.add_argument(
+        "--verbose-frames",
+        type=int,
+        default=5,
+        help="Number of frames to log with --verbose (includes the first frame)",
+    )
     args = p.parse_args()
 
     if not args.port:
@@ -368,9 +457,29 @@ def main() -> None:
 
     source = SerialFrameSource(args.port, args.baud, csv_mode=args.csv)
     source.start()
+    if not args.csv:
+        logger.info(
+            "Waiting up to %.0fs for first serial frame before TCP listen…",
+            args.first_frame_timeout,
+        )
+        if source.wait_for_frames(args.first_frame_timeout):
+            logger.info("Serial frame sync OK — starting TCP server")
+        else:
+            hint = source.diagnostic_hint()
+            logger.warning(
+                "No frames before TCP listen — %s",
+                hint or "Open Ephys may connect before stream starts",
+            )
     try:
         asyncio.run(
-            run_server(args.bind, args.tcp_port, source, args.first_frame_timeout)
+            run_server(
+                args.bind,
+                args.tcp_port,
+                source,
+                args.first_frame_timeout,
+                args.verbose,
+                args.verbose_frames,
+            )
         )
     except KeyboardInterrupt:
         print("\nStopped.")

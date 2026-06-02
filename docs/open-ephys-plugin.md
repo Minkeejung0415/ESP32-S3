@@ -2,7 +2,30 @@
 
 This document answers whether [Minkeejung0415/Plugin](https://github.com/Minkeejung0415/Plugin) must be edited for the ESP32-S3 STEP node, and how that relates to the built-in **Ephys Socket** plugin.
 
-Firmware reference: `arduino/step_node/step_node.ino` v1.3.0 · Host test: `host/esp32_tcp_client.py`
+Firmware reference: `arduino/step_node/step_node.ino` v1.3.0 · Host test: `host/esp32_tcp_client.py` · Checklist: `.planning/PLUGIN-INTEGRATION.md`
+
+---
+
+## Strategy (v1.0 milestone)
+
+| Priority | Path | When to use |
+|----------|------|-------------|
+| **Primary** | **Plugin repo AcqBoardRedPitaya** | STEP production alignment; OpenSim via Plugin `ephys_to_opensim_*` scripts |
+| **Alternate (lab)** | **Ephys Socket** + `host/serial_tcp_bridge.py` | Quick USB test without building Plugin; binary on `127.0.0.1:5000` |
+
+**Bring-up order:** one ESP32 on **USB or Wi-Fi TCP** with Plugin handshake first → Wi-Fi TCP hardened → OpenSim (Plugin scripts) → SD → **ESP-NOW later**. **Camera** is out of scope for this milestone.
+
+**No Plugin C++ in ESP32-S3 repo** — track patches and sign-off in `.planning/PLUGIN-INTEGRATION.md`.
+
+### Firmware presets vs Plugin
+
+| Target | `USB_OPEN_EPHYS_MODE` | `ENABLE_TCP` | Notes |
+|--------|----------------------|--------------|--------|
+| Plugin on **Wi-Fi** | `false` | `true` | Node IP:5000; send `REDPITAYA\n` then `START\n` (matches `esp32_tcp_client.py`) |
+| Ephys Socket on **USB** | `true` | off (USB serial binary) | `serial_tcp_bridge.py COMx` → localhost:5000; GUI does **not** send handshake |
+| Plugin on **USB** | `true` or bridge | bridge may need to **proxy** `REDPITAYA`/`START` to COM | **Gap:** bridge optimized for Ephys Socket; may not satisfy `STARTED`/`SENSORS` lines Plugin expects |
+
+Plugin AcqBoard expects **TCP control on port 5000** with `REDPITAYA`/`START`. ESP32 already implements those commands on Wi-Fi TCP; replies differ from Red Pitaya (`OK CHANNELS`, `STARTED`, `SENSORS`) and samples ride **TCP** not **UDP 55001** — see [Protocol comparison](#protocol-comparison) and [Path B](#path-b--plugin-repo-acqboard-primary).
 
 ---
 
@@ -10,10 +33,10 @@ Firmware reference: `arduino/step_node/step_node.ino` v1.3.0 · Host test: `host
 
 | Open Ephys path | Edit Plugin repo? |
 |-----------------|-------------------|
-| **Built-in Ephys Socket** (TCP client → node IP:5000) | **No** — use stock Open Ephys GUI; set `ENABLE_TCP true` on ESP32 |
-| **Custom Red Pitaya source plugin** (`AcqBoardRedPitaya` in Plugin repo) | **Yes — minimal to moderate changes** (handshake, START, transport, host, scaling) |
+| **Plugin AcqBoardRedPitaya** (recommended) | **Yes — minimal to moderate** (handshake, START, transport, host IP, scaling) |
+| **Built-in Ephys Socket** + USB bridge (alternate) | **No** Plugin build — `USB_OPEN_EPHYS_MODE true` + `serial_tcp_bridge.py` |
 
-For USB-only bench work, neither plugin is required — use Serial Monitor or `host/serial_bench_reader.py`.
+For serial CSV bench only, use Serial Monitor or `host/serial_bench_reader.py` (no Open Ephys).
 
 ---
 
@@ -55,9 +78,9 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 
 ---
 
-## Path A — No Plugin repo changes (recommended for first TCP test)
+## Path A — Ephys Socket + USB bridge (alternate lab path)
 
-Use the **built-in Open Ephys Ephys Socket** plugin:
+Use the **built-in Open Ephys Ephys Socket** plugin when you are **not** building the Plugin repo:
 
 1. On ESP32: `#define ENABLE_TCP true`, `#define ENABLE_SERIAL_BENCH false`, set Wi-Fi credentials.
 2. Note node IP from Serial Monitor.
@@ -72,13 +95,13 @@ set ESP32_NODE_HOST=<node-ip>
 python host\esp32_tcp_client.py
 ```
 
-**Plugin repo:** no edits.
+**Plugin repo:** no edits. **Not** the milestone primary path for STEP/OpenSim.
 
 ---
 
-## Path B — Custom Red Pitaya plugin (Plugin repo changes required)
+## Path B — Plugin repo AcqBoard (primary)
 
-To use **AcqBoardRedPitaya** from [Minkeejung0415/Plugin](https://github.com/Minkeejung0415/Plugin) with ESP32-S3 **as-is**, the plugin will fail at detection and/or streaming. Required changes (firmware parity is an alternative — not covered here):
+To use **AcqBoardRedPitaya** from [Minkeejung0415/Plugin](https://github.com/Minkeejung0415/Plugin) with ESP32-S3 **as-is**, the plugin will fail at detection and/or streaming. Required changes in **Plugin repo** (checklist: `.planning/PLUGIN-INTEGRATION.md`). Firmware parity in ESP32-S3 is an alternative — see [Alternative: align ESP32 firmware](#alternative-align-esp32-firmware-to-red-pitaya-plugin).
 
 ### 1. `acqboard.ccp` — `performDetectionHandshake()`
 
@@ -137,8 +160,21 @@ That would be firmware work in **ESP32-S3**, not Plugin repo. The custom plugin 
 
 ---
 
+## OpenSim (Plugin repo only)
+
+After AcqBoard streams into Open Ephys, run Plugin-repo scripts (not in ESP32-S3):
+
+- `ephys_to_opensim_bridge.py`
+- `opensim_live_realtime.py`
+
+Use the **fixed 8-channel ESP32 map** (ch0–5 ICM int16, ch6 DIO bit0, ch7 = 0). Red Pitaya quaternion tail slots do not apply unless firmware adds fusion.
+
+---
+
 ## See also
 
+- [.planning/PLUGIN-INTEGRATION.md](../.planning/PLUGIN-INTEGRATION.md) — operator checklist, presets, verification commands
+- [.planning/ROADMAP.md](../.planning/ROADMAP.md) — phase order
 - [arduino-ide-guide.md](arduino-ide-guide.md) — TCP / serial bench setup
 - [wiring-diagram.md](wiring-diagram.md) — ICM dual-silk wiring
 - Plugin change log: `docs/2026-04-27-change-documentation.md` in Plugin repo (UDP 55001, SENSORS line)
