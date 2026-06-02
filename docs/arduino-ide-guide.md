@@ -4,6 +4,31 @@ Primary bring-up path for v1: **one Seeed XIAO ESP32S3** — IMU + DIO + Open Ep
 
 **Full wiring diagram:** [wiring-diagram.md](wiring-diagram.md) (Mermaid + ASCII, v1.3.0 pin table)
 
+## USB-only quick start (Open Ephys — no Wi-Fi)
+
+Board on **USB to PC only**. Firmware **v1.3.4** (`FIRMWARE_VERSION` in sketch). Full detail: [§ USB Open Ephys bridge](#usb-open-ephys-bridge-workflow), [local-open-ephys-setup.md §8](local-open-ephys-setup.md#8-usb-bridge-no-wi-fi).
+
+1. **Flash** — in `arduino/step_node/step_node.ino` set:
+   ```cpp
+   #define USB_OPEN_EPHYS_MODE true
+   ```
+   (Sets `ENABLE_TCP false`, `ENABLE_SERIAL_BENCH true`, `SERIAL_OUTPUT_BINARY true`, **100 Hz**, **8 ch**.)
+2. **Arduino IDE** — Board **XIAO_ESP32S3**, **USB CDC On Boot → Enabled**, upload.
+3. **COM port (Windows)** — **Device Manager → Ports (COM & LPT)** → e.g. `USB Serial Device (COM5)`. Unplug/replug if missing.
+4. **Boot check** @ **115200** (optional): `Wi-Fi skipped`, `Serial bench active @115200`, `Format: Open Ephys binary on Serial`. Frames start **5 s** after reset.
+5. **Close Serial Monitor** (COM is exclusive).
+6. **Bridge** (from repo root; **close Serial Monitor** first):
+   ```powershell
+   pip install pyserial
+   .\host\run_usb_plugin_bridge.ps1 COM5
+   ```
+   Or Ephys Socket only: `python host\serial_tcp_bridge.py COM5` (no `--plugin`).
+7. **Open Ephys** — **`127.0.0.1:5000`** (not the ESP32 Wi-Fi IP). **Sample rate 100 Hz**, **8 channels**.
+   - **Ephys Socket** (built-in): bridge **without** `--plugin`.
+   - **Plugin Acq Board** (Minkeejung0415/Plugin, custom GUI): **`run_usb_plugin_bridge.ps1`**, Node IP **`127.0.0.1`** — Wi-Fi not required.
+
+**Quick verify before Open Ephys:** `python host\serial_bench_reader.py COM5 --binary --limit 10`
+
 ## Single board quick test
 
 Use **one** XIAO ESP32S3 only — no second node, no ESP-NOW setup.
@@ -228,6 +253,44 @@ python host\esp32_tcp_client.py
 
 **General:** open/hotspot traffic is not encrypted end-to-end beyond WPA on the hotspot itself.
 
+### Same Wi-Fi / correct password — still fails (checklist)
+
+Use this when you believe SSID/password are right and the PC is on the **same** network as the ESP32.
+
+| Step | What to check | Pass criterion |
+|------|----------------|----------------|
+| 1 | Serial @ 115200 after reset | **Not** `Wi-Fi skipped` (means `USB_OPEN_EPHYS_MODE true` — re-flash with `false`) |
+| 2 | Build flags | `USB_OPEN_EPHYS_MODE false`, `ENABLE_TCP true` |
+| 3 | STA vs Soft AP | **`WiFi STA CONNECTED`** + IP banner, **not** only `STEP_ESP32` fallback |
+| 4 | Scan line | Target SSID **seen** in scan; if **NOT in scan** → typo, hidden-only, or **5 GHz-only** AP |
+| 5 | While connecting | `disc_reason=15` or `202` → password/WPA3; `201` → SSID/band |
+| 6 | After connect | `TCP listen :5000`; every 10 s: `STATUS` block with same **IP** |
+| 7 | PC routing | `ping <IP>` succeeds; disable VPN |
+| 8 | TCP | `python host\esp32_tcp_client.py --host <IP>` logs `handshake: 8 channels…` |
+| 9 | Open Ephys Plugin | Node IP = **Serial IP** (not `127.0.0.1` unless USB bridge); port **5000** |
+| 10 | Isolation | Campus/guest Wi-Fi often blocks PC↔device; iPhone hotspot needs **Maximize Compatibility** |
+
+**Paste from Serial for support:** lines from `Scanning 2.4 GHz` through `WiFi OK` or `STA failed`, including any `disc_reason=…`, plus one `--- STA status ---` block (or `Soft AP` if fallback).
+
+**PC commands** (replace `192.168.1.42` with Serial IP):
+
+```powershell
+ping 192.168.1.42
+Test-NetConnection -ComputerName 192.168.1.42 -Port 5000
+$env:ESP32_NODE_HOST="192.168.1.42"
+python host\esp32_tcp_client.py --host 192.168.1.42
+```
+
+Optional raw TCP (PowerShell 7+): send handshake lines, then binary follows after `START`.
+
+```powershell
+$tcp = [System.Net.Sockets.TcpClient]::new("192.168.1.42", 5000)
+$w = [System.IO.StreamWriter]::new($tcp.GetStream()); $w.AutoFlush = $true
+$w.WriteLine("REDPITAYA"); $w.WriteLine("START")
+```
+
+Type **`STATUS`** in Serial Monitor anytime to re-print IP / TCP client state (firmware v1.3.4+).
+
 ## PC cannot join STEP_ESP32 (USB bridge — no Wi-Fi)
 
 Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32`) or when **PC↔ESP32 Wi-Fi is impossible** (VPN, corporate drivers, client isolation). **IMU stays on 4 wires + USB only** — no hotspot, no joining the ESP32 AP.
@@ -244,7 +307,7 @@ Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32
 
 ### USB Open Ephys bridge workflow
 
-**Important:** The sketch defaults to **Wi-Fi TCP mode** (`USB_OPEN_EPHYS_MODE false`). USB serial sends **boot diagnostics only** — no sample frames — until you enable USB mode and re-flash.
+**Default (v1.3.4):** **`USB_OPEN_EPHYS_MODE true`** — USB binary bench, no on-board TCP. For **Plugin on Wi-Fi**, set **`USB_OPEN_EPHYS_MODE false`** and re-flash; then use the IP from Serial Monitor, not `127.0.0.1`.
 
 1. **Sketch** — set **`USB_OPEN_EPHYS_MODE true`** in `arduino/step_node/step_node.ino` (or manually set):
    ```cpp
@@ -265,15 +328,17 @@ Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32
    ```
    Expect `frame=0 ch=(...)` lines. If you only see boot text or CSV, fix sketch flags before running the bridge.
 4. **Close Serial Monitor** (COM port is exclusive).
-5. **Bridge on PC** (start bridge **after** step 3 works, or wait **>5 s** after reset):
+5. **Bridge on PC** (start **after** step 3 works, or wait **>5 s** after reset):
    ```powershell
    pip install pyserial
-   python host\serial_tcp_bridge.py COM5
+   .\host\run_usb_plugin_bridge.ps1 COM5
    ```
-   Replace `COM5` with your port (Device Manager). Optional: `set SERIAL_PORT=COM5`. First-frame wait defaults to **15 s** (covers boot delay).
-6. **Open Ephys:** add **Ephys Socket** → TCP client → **`127.0.0.1`** port **`5000`**. The bridge logs the first serial bytes and a specific hint if no frames parse.
+   Replace `COM5` with your port. **Plugin Acq Board** uses `--plugin` (included in the script). **Ephys Socket:** `python host\serial_tcp_bridge.py COM5` without `--plugin`. First-frame wait defaults to **15 s**.
+6. **Open Ephys:**
+   - **Plugin Acq Board:** Node IP **`127.0.0.1`**, port **5000**, **100 Hz** (custom GUI + Plugin patches).
+   - **Ephys Socket:** TCP client → **`127.0.0.1:5000`** (no `REDPITAYA`/`START` on GUI side).
 
-The bridge reads Open Ephys **binary frames** from USB and serves them on **localhost:5000**. Optional `REDPITAYA` / `START` (300 ms wait) is only for `esp32_tcp_client.py`. Test without Open Ephys:
+The bridge reads Open Ephys **binary frames** from USB and serves them on **localhost:5000**. With **`--plugin`**, it answers **`REDPITAYA`** / **`START`** like ESP32 Wi-Fi firmware. Test without Open Ephys:
 
 ```powershell
 python host\esp32_tcp_client.py

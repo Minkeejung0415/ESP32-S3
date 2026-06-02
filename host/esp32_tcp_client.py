@@ -84,5 +84,31 @@ async def run_stream(host: str | None = None, port: int | None = None) -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_stream())
+    ap = argparse.ArgumentParser(
+        description="Test ESP32 STEP node TCP (REDPITAYA/START + binary stream)"
+    )
+    ap.add_argument(
+        "--host",
+        default=os.environ.get("ESP32_NODE_HOST", "192.168.4.1"),
+        help="Node IP from Serial (WiFi OK IP=… or Soft AP 192.168.4.1)",
+    )
+    ap.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("ESP32_NODE_PORT", "5000")),
+    )
+    args = ap.parse_args()
+    try:
+        asyncio.run(run_stream(host=args.host, port=args.port))
+    except (ConnectionRefusedError, OSError) as e:
+        logging.error(
+            "TCP connect failed to %s:%s — ping IP; check firewall; "
+            "Serial must show 'TCP listen :5000' and same LAN (not client isolation). %s",
+            args.host,
+            args.port,
+            e,
+        )
+        raise SystemExit(1) from e

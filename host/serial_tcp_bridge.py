@@ -16,6 +16,7 @@ Windows examples:
   python host/serial_tcp_bridge.py COM5
   # Minkeejung0415/Plugin AcqBoard (REDPITAYA/START handshake):
   python host/serial_tcp_bridge.py COM5 --plugin
+  # Or: host/run_usb_plugin_bridge.ps1 COM5
 
 Open Ephys:
   Ephys Socket → 127.0.0.1:5000

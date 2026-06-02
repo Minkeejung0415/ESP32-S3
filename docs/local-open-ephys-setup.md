@@ -7,9 +7,13 @@ Step-by-step setup for **Seeed XIAO ESP32-S3** (ICM-20948 + DIO) with the custom
 | ESP32-S3 + host scripts | `C:\Users\justi\ESP32-S3` (pull `main`) |
 | Plugin patches | `C:\Users\justi\Plugin` (need commits **`217425a`** + **`e298679`**) |
 
-**Primary path:** Plugin **Acq Board** → Wi-Fi TCP → ESP32 `<ip>:5000`  
-**Alternate (no Wi‑Fi):** USB → `serial_tcp_bridge.py --plugin` → Plugin AcqBoard @ `127.0.0.1:5000`  
-**Lab alternate:** USB → bridge (no `--plugin`) → built-in **Ephys Socket** @ `127.0.0.1:5000`
+| Path | When | Open Ephys |
+|------|------|------------|
+| **USB + Plugin (recommended if Wi‑Fi broken)** | Board on **USB power/data** to PC; `USB_OPEN_EPHYS_MODE true` | `host\run_usb_plugin_bridge.ps1 COMx` → Acq Board **Node IP `127.0.0.1`**, port **5000**, **100 Hz**, **8 ch** — **Wi‑Fi not required** |
+| **Wi‑Fi + Plugin** | `USB_OPEN_EPHYS_MODE false`, STA or Soft AP | Acq Board → **Serial Monitor IP** (e.g. `192.168.4.1`), port **5000** |
+| **USB + Ephys Socket** | Same USB firmware; bridge **without** `--plugin` | Built-in Ephys Socket → **`127.0.0.1:5000`** |
+
+**Architecture (USB + Plugin):** firmware → Open Ephys **binary on USB serial @ 100 Hz, 8 ch** → `serial_tcp_bridge.py --plugin` → TCP **`127.0.0.1:5000`** with `REDPITAYA` / `START` / `STARTED` / `SENSORS` replies → Plugin **Acq Board** (same handshake as direct ESP32 TCP). Running Wi‑Fi TCP and the bridge at once is unnecessary and shares one COM port; use the bridge for Plugin on USB.
 
 See also: [open-ephys-plugin.md](open-ephys-plugin.md), [arduino-ide-guide.md](arduino-ide-guide.md), [.planning/PLUGIN-INTEGRATION.md](../.planning/PLUGIN-INTEGRATION.md).
 
@@ -72,15 +76,26 @@ Firmware **1.3.2+** logs AP MAC, channel **6**, WPA2, broadcast ON. Serial comma
 
 ---
 
-### Preset B2 — Plugin AcqBoard on USB (no Wi‑Fi)
+### Preset B2 — USB powered + Plugin Acq Board (no Wi‑Fi)
 
-Same firmware as Preset B (`USB_OPEN_EPHYS_MODE true`). Host speaks `REDPITAYA` / `START` on TCP; bridge proxies handshake and streams USB binary.
+Use when the XIAO is **USB-powered from the PC** (no battery) and Wi‑Fi STA / `STEP_ESP32` is unreliable.
+
+1. Flash with **`USB_OPEN_EPHYS_MODE true`** (sketch default in v1.3.4).
+2. Serial @ 115200: `Wi-Fi skipped`, `Serial bench active`, `Format: Open Ephys binary on Serial`.
+3. **Close Serial Monitor**; wait **>5 s** after reset.
+4. Run bridge (replace `COM5` with Device Manager port):
 
 ```powershell
-python host\serial_tcp_bridge.py COM5 --plugin
+cd C:\Users\justi\ESP32-S3
+pip install pyserial
+.\host\run_usb_plugin_bridge.ps1 COM5
 ```
 
-Open Ephys Plugin: **Node IP `127.0.0.1`**, port **5000**. Requires Plugin commits **`217425a`** + **`e298679`** (ESP32 TCP path).
+Or: `python host\serial_tcp_bridge.py COM5 --plugin`
+
+5. **Custom Open Ephys GUI** (Plugin built per §6): **Sources → Acq Board** → **Node IP `127.0.0.1`**, **100 Hz** → Record → **8 channels**.
+
+Plugin repo must include commits **`217425a`** + **`e298679`** (`isEsp32Node`, TCP binary stream). Wi‑Fi is **not** used on this path.
 
 ---
 
@@ -193,7 +208,11 @@ Detection tries `rp-*.local` first, then Node IP / `ESP32_NODE_HOST`.
 
 ---
 
-## 8. USB bridge (no Wi‑Fi)
+## 8. USB bridge (no Wi‑Fi) — Plugin Acq Board step-by-step
+
+Use when the board is **USB-powered on the PC** and you want the **original Acquisition Board plugin** without fixing Wi‑Fi.
+
+**Quick launcher:** `host\run_usb_plugin_bridge.ps1 COM5` or `host\run_usb_plugin_bridge.bat COM5`
 
 Use when Windows will not join **`STEP_ESP32`** or iPhone hotspot STA fails.
 
@@ -223,10 +242,10 @@ The bridge streams binary immediately (no `REDPITAYA` / `START` on the GUI side)
 ### 8b. Plugin AcqBoard over USB (Minkeejung0415/Plugin)
 
 ```powershell
-python host\serial_tcp_bridge.py COM5 --plugin
+.\host\run_usb_plugin_bridge.ps1 COM5
 ```
 
-Bridge listens on **`127.0.0.1:5000`** and answers like Red Pitaya + ESP32 firmware:
+Bridge listens on **`127.0.0.1:5000`** and answers like ESP32 Wi‑Fi firmware + Plugin expectations:
 
 | Client sends | Bridge replies |
 |--------------|----------------|
@@ -270,14 +289,18 @@ Edit model paths in script headers for your PC. Live visualizer: **Python 3.8** 
 
 ## 10. Troubleshooting
 
+Full step-by-step for “correct Wi-Fi, same network, still fails”: [arduino-ide-guide.md § Same Wi-Fi checklist](arduino-ide-guide.md#same-wi-fi--correct-password--still-fails-checklist).
+
 | Symptom | Fix |
 |---------|-----|
 | `synthetic fallback` | I2C wiring, `ICM20948_ADDR`, NCS→3V3 |
-| Wi-Fi fails / `status=6 WL_DISCONNECTED` | Board auto-starts Soft AP — PC joins **`STEP_ESP32`** / **`step1234`** → **`192.168.4.1`**. **Fix STA:** iPhone *Maximize Compatibility* ON; exact `WIFI_SSID`; read Serial `disc_reason` (15/202 = bad password, 201 = SSID/5 GHz). **PC won't join AP:** disable random MAC, `netsh wlan connect`, or **§8 USB bridge**. |
-| TCP refused | Same LAN, `ping` IP, no VPN |
+| `Wi-Fi skipped` on Serial | `USB_OPEN_EPHYS_MODE` is **true** — PC must use `serial_tcp_bridge.py` → `127.0.0.1:5000`, not node Wi-Fi IP |
+| Wi-Fi fails / `status=6 WL_DISCONNECTED` | Board auto-starts Soft AP — PC joins **`STEP_ESP32`** / **`step1234`** → **`192.168.4.1`**. **Fix STA:** iPhone *Maximize Compatibility* ON; exact `WIFI_SSID`; read Serial `disc_reason` (15/202 = bad password/WPA3, 201 = SSID/5 GHz/hidden). **PC won't join AP:** disable random MAC, `netsh wlan connect`, or **§8 USB bridge**. |
+| STA OK but Plugin/Ephys fails | `ping` + `Test-NetConnection -Port 5000`; use **Serial IP** not mDNS guess; send `REDPITAYA`/`START` (Plugin) or use USB bridge for Ephys Socket only |
+| TCP refused | Same LAN, no **client isolation** (campus/guest), Windows firewall allow Python, no VPN |
 | COM busy | Close Serial Monitor |
 | Bridge no frames | `USB_OPEN_EPHYS_MODE true`, wait >5 s |
-| Plugin no board | Set **Node IP** or `ESP32_NODE_HOST` |
+| Plugin no board | Set **Node IP** or `ESP32_NODE_HOST`; Plugin patches per `docs/open-ephys-plugin.md` |
 | Campus Wi-Fi | Use phone hotspot or Soft AP |
 
 ---
@@ -287,7 +310,7 @@ Edit model paths in script headers for your PC. Live visualizer: **Python 3.8** 
 | Component | Pin |
 |-----------|-----|
 | ESP32-S3 | `4264e32+` on `main` |
-| Firmware | `1.3.2` in sketch |
+| Firmware | `1.3.4` in sketch |
 | Plugin | **`217425a`** on `main` |
 | Rate / port | **100 Hz**, TCP **5000** |
 
@@ -295,8 +318,12 @@ Edit model paths in script headers for your PC. Live visualizer: **Python 3.8** 
 
 ## Bring-up order
 
-1. `serial_bench_reader.py` → IMU OK  
-2. `esp32_tcp_client.py` → TCP OK  
-3. Build GUI + Plugin → record 8 ch  
-4. Optional OpenSim bridge  
-5. Optional USB + Ephys Socket  
+**USB + Plugin (typical when Wi‑Fi fails):**
+
+1. Flash `USB_OPEN_EPHYS_MODE true` → `serial_bench_reader.py COMx --binary --limit 10`  
+2. `run_usb_plugin_bridge.ps1 COMx` → `esp32_tcp_client.py` with `ESP32_NODE_HOST=127.0.0.1`  
+3. Build GUI + Plugin (`217425a`, `e298679`) → Acq Board @ **127.0.0.1:5000**, 100 Hz, 8 ch  
+
+**Wi‑Fi + Plugin:** `esp32_tcp_client.py` against node IP, then same GUI with that IP.
+
+Optional: OpenSim bridge; USB + Ephys Socket (bridge without `--plugin`).
