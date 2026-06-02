@@ -295,7 +295,7 @@ static void fillOeHeader(OeHeader *hdr) {
   hdr->num_channels = NUM_CHANNELS;
   hdr->samples_per_channel = 1;
   hdr->element_size = 2;
-  hdr->bit_depth = 3;  // Open Ephys Ephys Socket: OpenCV S16 enum (not 16 bits)
+  hdr->bit_depth = 3;  // Open Ephys Ephys Socket: OpenCV S16 enum
   hdr->num_bytes = NUM_CHANNELS * 1 * 2;
 }
 
