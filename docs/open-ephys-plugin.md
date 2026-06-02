@@ -62,7 +62,7 @@ Use the **built-in Open Ephys Ephys Socket** plugin:
 1. On ESP32: `#define ENABLE_TCP true`, `#define ENABLE_SERIAL_BENCH false`, set Wi-Fi credentials.
 2. Note node IP from Serial Monitor.
 3. In Open Ephys GUI: add **Ephys Socket** → TCP client → `<node-ip>:5000`.
-4. Send handshake per [Ephys Socket docs](https://open-ephys.github.io/gui-docs/User-Manual/Plugins/Ephys-Socket.html): `REDPITAYA` then `START`.
+4. **Connect only** — built-in Ephys Socket is a TCP client that immediately reads **22-byte binary packet headers**; it does **not** send `REDPITAYA` / `START`. ESP32 firmware TCP mode still expects that text handshake today; for Open Ephys use **USB + `serial_tcp_bridge.py`** (see [arduino-ide-guide.md](arduino-ide-guide.md)) or adapt firmware to stream binary on connect.
 5. Expect **8 channels @ 100 Hz**; scale ax–gz on the host (raw int16 ÷ sensitivity — see `host/esp32_tcp_client.py` env `ICM_ACCEL_SCALE` / `ICM_GYRO_SCALE`).
 
 Verify with Python first:

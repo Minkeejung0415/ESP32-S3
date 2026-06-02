@@ -5,7 +5,7 @@ USB Serial → TCP bridge for Open Ephys (Ephys Socket compatible).
 Use when the PC cannot join the ESP32 Wi-Fi (STEP_ESP32 Soft AP or hotspot).
 Board streams Open Ephys binary on USB; this script listens on localhost:5000.
 
-Sketch preset (USB_OPEN_EPHYS_MODE in step_node.ino):
+Sketch preset — set `USB_OPEN_EPHYS_MODE true` in step_node.ino (or manually):
   ENABLE_TCP false
   ENABLE_SERIAL_BENCH true
   SERIAL_OUTPUT_BINARY true
@@ -38,6 +38,8 @@ FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
 HANDSHAKE_REPLY = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
 # Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
 OE_BIT_DEPTH_S16 = 3
+DEFAULT_FIRST_FRAME_TIMEOUT = 15.0
+
 
 
 def open_serial(port: str, baud: int):
@@ -85,6 +87,47 @@ def normalize_frame_for_oe(frame: bytes) -> bytes:
     fixed = (hdr[0], hdr[1], OE_BIT_DEPTH_S16, hdr[3], hdr[4], hdr[5])
     return HEADER.pack(*fixed) + frame[HEADER_SIZE:]
 
+def _ascii_preview(data: bytes, limit: int = 80) -> str:
+    text = data[:limit].decode("utf-8", errors="replace")
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def diagnose_serial_buffer(buf: bytearray, csv_mode: bool) -> str | None:
+    """Return a hint when no Open Ephys frames are parsed yet."""
+    if not buf:
+        return (
+            "no bytes from serial — wrong COM port, cable, or another app has the port open"
+        )
+    sample = bytes(buf[:512])
+    text = sample.decode("utf-8", errors="replace")
+    if "TCP listen" in text or "Client connected" in text:
+        return (
+            "firmware looks like Wi-Fi TCP mode (ENABLE_TCP true, ENABLE_SERIAL_BENCH false) — "
+            "set USB_OPEN_EPHYS_MODE true in step_node.ino and re-flash"
+        )
+    if "Wi-Fi skipped" in text and "Serial bench active" not in text:
+        return "serial bench disabled — set ENABLE_SERIAL_BENCH true and re-flash"
+    if "Format: CSV" in text or (not csv_mode and "seq," in text):
+        return (
+            "CSV serial detected — flash with SERIAL_OUTPUT_BINARY true "
+            "or run bridge with --csv"
+        )
+    if csv_mode and b"\x00" in sample[:64]:
+        return (
+            "binary-like data while --csv set — use default binary mode "
+            "(SERIAL_OUTPUT_BINARY true on board)"
+        )
+    if "CSV/stream paused" in text or "BOOT DIAGNOSTICS" in text:
+        return (
+            "boot diagnostics only — wait for BOOT_CSV_DELAY_MS (5 s) after boot, "
+            "then confirm sample frames with serial_bench_reader.py --binary"
+        )
+    return (
+        f"received {len(buf)} bytes but no valid Open Ephys header — "
+        f"first bytes: {_ascii_preview(sample)}"
+    )
+
+
 
 class SerialFrameSource:
     """Background thread: parse binary (or CSV) frames from USB serial."""
@@ -96,6 +139,8 @@ class SerialFrameSource:
         self._queue: deque[bytes] = deque(maxlen=256)
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._bytes_received = 0
+        self._logged_first_chunk = False
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -119,6 +164,10 @@ class SerialFrameSource:
         with self._lock:
             self._queue.clear()
 
+    def diagnostic_hint(self) -> str | None:
+        with self._lock:
+            return diagnose_serial_buffer(self._buf, self._csv_mode)
+
     def write_line(self, line: str) -> None:
         self._ser.write(line.encode("ascii"))
 
@@ -130,6 +179,16 @@ class SerialFrameSource:
         while not self._stop.is_set():
             chunk = self._ser.read(4096)
             if chunk:
+                self._bytes_received += len(chunk)
+                if not self._logged_first_chunk:
+                    self._logged_first_chunk = True
+                    preview = chunk[:64]
+                    logger.info(
+                        "serial first %d bytes (hex): %s",
+                        len(preview),
+                        preview.hex(" "),
+                    )
+                    logger.info("serial first bytes (text): %s", _ascii_preview(chunk, 120))
                 self._buf.extend(chunk)
             if self._csv_mode:
                 self._parse_csv_lines()
@@ -174,6 +233,7 @@ async def handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
+    first_frame_timeout: float,
 ) -> None:
     peer = writer.get_extra_info("peername")
     logger.info("TCP client connected: %s", peer)
@@ -186,7 +246,7 @@ async def handle_client(
 
         if not peek:
             logger.info("Ephys Socket mode — streaming binary (no handshake)")
-            await stream_frames(reader, writer, source)
+            await stream_frames(reader, writer, source, first_frame_timeout)
             return
 
         first_line = peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
@@ -203,7 +263,7 @@ async def handle_client(
                     logger.info("START — forwarding serial stream")
                     source.write_line("START\n")
                     source.drain()
-                    await stream_frames(reader, writer, source)
+                    await stream_frames(reader, writer, source, first_frame_timeout)
                     break
             return
 
@@ -211,7 +271,7 @@ async def handle_client(
             "Streaming binary for Open Ephys (%d byte client peek)",
             len(peek),
         )
-        await stream_frames(reader, writer, source)
+        await stream_frames(reader, writer, source, first_frame_timeout)
     except asyncio.TimeoutError:
         logger.warning("client idle timeout")
     except ConnectionResetError:
@@ -229,12 +289,23 @@ async def stream_frames(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
+    first_frame_timeout: float,
 ) -> None:
     loop = asyncio.get_event_loop()
+    first_frame = True
+    warned_no_frames = False
     while not reader.at_eof():
-        frame = await loop.run_in_executor(None, source.get_frame, 1.0)
+        timeout = first_frame_timeout if first_frame else 1.0
+        frame = await loop.run_in_executor(None, source.get_frame, timeout)
         if frame is None:
+            if first_frame and not warned_no_frames:
+                warned_no_frames = True
+                hint = source.diagnostic_hint()
+                logger.warning("no serial frames yet — %s", hint or "unknown cause")
             continue
+        if first_frame:
+            logger.info("first Open Ephys frame from serial (%d bytes)", len(frame))
+        first_frame = False
         writer.write(normalize_frame_for_oe(frame))
         await writer.drain()
 
@@ -243,9 +314,10 @@ async def run_server(
     bind: str,
     port: int,
     source: SerialFrameSource,
+    first_frame_timeout: float,
 ) -> None:
     server = await asyncio.start_server(
-        lambda r, w: handle_client(r, w, source),
+        lambda r, w: handle_client(r, w, source, first_frame_timeout),
         bind,
         port,
     )
@@ -273,6 +345,12 @@ def main() -> None:
         action="store_true",
         help="Parse CSV serial (SERIAL_OUTPUT_BINARY false) instead of binary",
     )
+    p.add_argument(
+        "--first-frame-timeout",
+        type=float,
+        default=float(os.environ.get("BRIDGE_FIRST_FRAME_TIMEOUT", DEFAULT_FIRST_FRAME_TIMEOUT)),
+        help="Seconds to wait for the first serial frame (covers 5 s boot delay)",
+    )
     args = p.parse_args()
 
     if not args.port:
@@ -280,13 +358,20 @@ def main() -> None:
         sys.exit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port}")
-    print("Close Serial Monitor before starting. Open Ephys: Ephys Socket → 127.0.0.1:5000")
+    mode = "CSV" if args.csv else "Open Ephys binary"
+    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} ({mode})")
+    print(
+        "Close Serial Monitor before starting. "
+        "Flash with USB_OPEN_EPHYS_MODE true; wait >5 s after boot. "
+        "Open Ephys: Ephys Socket → 127.0.0.1:5000"
+    )
 
     source = SerialFrameSource(args.port, args.baud, csv_mode=args.csv)
     source.start()
     try:
-        asyncio.run(run_server(args.bind, args.tcp_port, source))
+        asyncio.run(
+            run_server(args.bind, args.tcp_port, source, args.first_frame_timeout)
+        )
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

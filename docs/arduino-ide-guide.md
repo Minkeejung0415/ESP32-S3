@@ -244,7 +244,13 @@ Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32
 
 ### USB Open Ephys bridge workflow
 
-1. **Sketch** — copy **USB_OPEN_EPHYS_MODE** from `arduino/step_node/step_node.ino` header:
+**Important:** The sketch defaults to **Wi-Fi TCP mode** (`USB_OPEN_EPHYS_MODE false`). USB serial sends **boot diagnostics only** — no sample frames — until you enable USB mode and re-flash.
+
+1. **Sketch** — set **`USB_OPEN_EPHYS_MODE true`** in `arduino/step_node/step_node.ino` (or manually set):
+   ```cpp
+   #define USB_OPEN_EPHYS_MODE true
+   ```
+   Equivalent manual defines:
    ```cpp
    #define ENABLE_TCP false
    #define ENABLE_SERIAL_BENCH true
@@ -252,17 +258,22 @@ Use this when Windows **will not connect** to the board’s Soft AP (`STEP_ESP32
    #define ENABLE_ESPNOW false
    #define ENABLE_SD false
    ```
-2. **Flash** XIAO (USB CDC On Boot enabled). Serial should show `Wi-Fi skipped` and `Format: Open Ephys binary on Serial`.
-3. **Close Serial Monitor** (COM port is exclusive).
-4. **Bridge on PC:**
+2. **Flash** XIAO (USB CDC On Boot enabled). Serial Monitor @ 115200 should show **`Wi-Fi skipped`**, **`Serial bench active @115200`**, and **`Format: Open Ephys binary on Serial`**. Sample frames start **5 s after boot** (`BOOT_CSV_DELAY_MS`).
+3. **Verify USB stream** (close Monitor when done — port is exclusive):
+   ```powershell
+   python host\serial_bench_reader.py COM5 --binary --limit 10
+   ```
+   Expect `frame=0 ch=(...)` lines. If you only see boot text or CSV, fix sketch flags before running the bridge.
+4. **Close Serial Monitor** (COM port is exclusive).
+5. **Bridge on PC** (start bridge **after** step 3 works, or wait **>5 s** after reset):
    ```powershell
    pip install pyserial
    python host\serial_tcp_bridge.py COM5
    ```
-   Replace `COM5` with your port (Device Manager). Optional: `set SERIAL_PORT=COM5`.
-5. **Open Ephys:** add **Ephys Socket** → TCP client → **`127.0.0.1`** port **`5000`** (not the ESP32 IP). Handshake `REDPITAYA` / `START` is handled by the bridge.
+   Replace `COM5` with your port (Device Manager). Optional: `set SERIAL_PORT=COM5`. First-frame wait defaults to **15 s** (covers boot delay).
+6. **Open Ephys:** add **Ephys Socket** → TCP client → **`127.0.0.1`** port **`5000`**. The bridge logs the first serial bytes and a specific hint if no frames parse.
 
-The bridge reads Open Ephys **binary frames** from USB and serves them on **localhost:5000**. It also forwards `REDPITAYA` / `START` lines to serial for logging. Test without Open Ephys:
+The bridge reads Open Ephys **binary frames** from USB and serves them on **localhost:5000**. Optional `REDPITAYA` / `START` (300 ms wait) is only for `esp32_tcp_client.py`. Test without Open Ephys:
 
 ```powershell
 python host\esp32_tcp_client.py
@@ -307,6 +318,7 @@ Edit the config block at the top:
 | `NODE_IS_MASTER` | Only when `ENABLE_ESPNOW true` |
 | `ENABLE_SD` | `true` on Sense board with SD wired |
 | `ENABLE_TCP` | Open Ephys TCP server on port 5000 (`false` for USB-only) |
+| **`USB_OPEN_EPHYS_MODE`** | **`true`** = USB serial → `serial_tcp_bridge.py` preset (overrides TCP/bench/binary flags) |
 | `ENABLE_SERIAL_BENCH` | `true` = stream on USB Serial @115200 |
 | `SERIAL_OUTPUT_BINARY` | `true` = Open Ephys binary on Serial; `false` = CSV |
 
@@ -407,7 +419,7 @@ Same architecture in `firmware/` for teams using **idf.py** (camera hooks, FreeR
 | ICM not found | Check wiring, I2C address 0x68/0x69, run with synthetic fallback |
 | No TCP client | Firewall; `ping` node IP; after timeout use Soft AP `192.168.4.1`; run `host/esp32_tcp_client.py` |
 | Wi-Fi connect timeout | See [Hotspot troubleshooting](#hotspot-troubleshooting-connect-timeout); join `STEP_ESP32` / `step1234` on PC |
-| USB bench empty | `ENABLE_TCP false`, `ENABLE_SERIAL_BENCH true`; use `serial_bench_reader.py` |
+| USB bench empty / bridge "no serial frames" | Set **`USB_OPEN_EPHYS_MODE true`**, re-flash; wait **>5 s** after boot; verify with `serial_bench_reader.py --binary`; close Serial Monitor |
 | ESP-NOW no sync | Same RF channel; Wi-Fi must be started before `esp_now_init` |
 | SD fail | Sense CS pin, FAT32 card, `ENABLE_SD` |
 

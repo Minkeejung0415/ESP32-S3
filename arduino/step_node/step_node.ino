@@ -22,6 +22,7 @@
  * --- USB_OPEN_EPHYS_MODE (no Wi-Fi — PC cannot join STEP_ESP32) ---
  * Run on PC: python host/serial_tcp_bridge.py COM5
  * Open Ephys Ephys Socket → 127.0.0.1:5000
+ * Set USB_OPEN_EPHYS_MODE true below (or copy these defines):
  * #define ENABLE_TCP false
  * #define ENABLE_SERIAL_BENCH true
  * #define SERIAL_OUTPUT_BINARY true
@@ -71,9 +72,20 @@
 
 #define NODE_IS_MASTER true
 #define ENABLE_SD false
+
+// Set true for host/serial_tcp_bridge.py (USB → Open Ephys). When false, default is Wi-Fi TCP.
+#define USB_OPEN_EPHYS_MODE false
+
+#if USB_OPEN_EPHYS_MODE
+#define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
+#define SERIAL_OUTPUT_BINARY true
+#else
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false
 #define SERIAL_OUTPUT_BINARY false
+#endif
+
 #define PIN_SD_CS 21
 
 #define ICM_REG_BANK_SEL 0x7F
