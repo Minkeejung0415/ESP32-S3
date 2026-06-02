@@ -36,6 +36,8 @@ HEADER_SIZE = HEADER.size
 FRAME_PAYLOAD = 8 * 2  # 8 x int16
 FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
 HANDSHAKE_REPLY = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
+# Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
+OE_BIT_DEPTH_S16 = 3
 
 
 def open_serial(port: str, baud: int):
@@ -58,7 +60,7 @@ def pack_csv_row(fields: list[str]) -> bytes | None:
         ch = [int(fields[i]) for i in range(1, 9)]
     except ValueError:
         return None
-    hdr = HEADER.pack(0, FRAME_PAYLOAD, 16, 2, 8, 1)
+    hdr = HEADER.pack(0, FRAME_PAYLOAD, OE_BIT_DEPTH_S16, 2, 8, 1)
     return hdr + struct.pack("<8h", *ch)
 
 
@@ -66,11 +68,22 @@ def is_valid_header(hdr: tuple) -> bool:
     _off, num_bytes, bit_depth, elem, n_ch, n_per = hdr
     return (
         elem == 2
-        and bit_depth == 16
+        and bit_depth in (OE_BIT_DEPTH_S16, 16)
         and n_ch == 8
         and n_per == 1
         and num_bytes == FRAME_PAYLOAD
     )
+
+
+def normalize_frame_for_oe(frame: bytes) -> bytes:
+    """Ephys Socket expects bit_depth=3 (S16 enum), not legacy 16."""
+    if len(frame) < FRAME_SIZE:
+        return frame
+    hdr = HEADER.unpack_from(frame, 0)
+    if hdr[2] == OE_BIT_DEPTH_S16:
+        return frame
+    fixed = (hdr[0], hdr[1], OE_BIT_DEPTH_S16, hdr[3], hdr[4], hdr[5])
+    return HEADER.pack(*fixed) + frame[HEADER_SIZE:]
 
 
 class SerialFrameSource:
@@ -165,24 +178,40 @@ async def handle_client(
     peer = writer.get_extra_info("peername")
     logger.info("TCP client connected: %s", peer)
     try:
-        while True:
-            line = await asyncio.wait_for(read_line(reader), timeout=120.0)
-            if not line:
-                break
-            upper = line.upper()
-            if upper.startswith("REDPITAYA"):
-                logger.info("handshake REDPITAYA")
-                source.write_line("REDPITAYA\n")
-                writer.write(HANDSHAKE_REPLY)
-                await writer.drain()
-            elif upper.startswith("START"):
-                logger.info("START — forwarding serial stream")
-                source.write_line("START\n")
-                source.drain()
-                await stream_frames(reader, writer, source)
-                break
-            else:
-                logger.debug("ignore command: %s", line)
+        # Ephys Socket reads binary immediately; esp32_tcp_client sends REDPITAYA/START first.
+        try:
+            peek = await asyncio.wait_for(reader.read(256), timeout=0.4)
+        except asyncio.TimeoutError:
+            peek = b""
+
+        if not peek:
+            logger.info("Ephys Socket mode — streaming binary (no handshake)")
+            await stream_frames(reader, writer, source)
+            return
+
+        first_line = peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
+        if first_line.upper().startswith("REDPITAYA"):
+            logger.info("handshake REDPITAYA")
+            source.write_line("REDPITAYA\n")
+            writer.write(HANDSHAKE_REPLY)
+            await writer.drain()
+            while True:
+                line = await asyncio.wait_for(read_line(reader), timeout=120.0)
+                if not line:
+                    break
+                if line.upper().startswith("START"):
+                    logger.info("START — forwarding serial stream")
+                    source.write_line("START\n")
+                    source.drain()
+                    await stream_frames(reader, writer, source)
+                    break
+            return
+
+        logger.info(
+            "Streaming binary for Open Ephys (%d byte client peek)",
+            len(peek),
+        )
+        await stream_frames(reader, writer, source)
     except asyncio.TimeoutError:
         logger.warning("client idle timeout")
     except ConnectionResetError:
@@ -206,7 +235,7 @@ async def stream_frames(
         frame = await loop.run_in_executor(None, source.get_frame, 1.0)
         if frame is None:
             continue
-        writer.write(frame)
+        writer.write(normalize_frame_for_oe(frame))
         await writer.drain()
 
 
