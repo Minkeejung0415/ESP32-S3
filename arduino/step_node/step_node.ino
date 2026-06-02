@@ -45,7 +45,7 @@
 #include <math.h>
 #include <string.h>
 
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.3.2"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
 #define BOOT_DIAGNOSTICS true
@@ -59,6 +59,8 @@
 // Soft AP fallback after STA timeout (automatic — do not need to edit unless renaming lab AP)
 #define WIFI_AP_SSID "STEP_ESP32"
 #define WIFI_AP_PASS "step1234"
+#define WIFI_AP_CHANNEL 6       // 2.4 GHz only — use 1, 6, or 11; explicit helps Windows join
+#define WIFI_AP_MAX_CONN 4
 #define WIFI_STA_TIMEOUT_MS 30000
 
 #define TCP_PORT 5000
@@ -368,7 +370,16 @@ static void handleLine(const String &line) {
   } else if (line.startsWith("START")) {
     streaming = true;
     Serial.println("TCP streaming START");
+  } else if (line.equalsIgnoreCase("AP?") || line.equalsIgnoreCase("WIFI?")) {
+    printApStatus();
   }
+}
+
+static void pollSerialCommands() {
+  if (!Serial.available()) return;
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line.length()) handleLine(line);
 }
 
 static const char *wifiStatusString(wl_status_t status) {
@@ -379,32 +390,90 @@ static const char *wifiStatusString(wl_status_t status) {
     case WL_CONNECTED: return "WL_CONNECTED";
     case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED (wrong password?)";
     case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
-    case WL_DISCONNECTED: return "WL_DISCONNECTED";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED (auth timeout / AP rejected / incompatible security?)";
     default: return "unknown";
+  }
+}
+
+static void trimInPlace(char *s) {
+  if (!s || !*s) return;
+  char *start = s;
+  while (*start == ' ' || *start == '\t') start++;
+  if (start != s) memmove(s, start, strlen(start) + 1);
+  size_t n = strlen(s);
+  while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
+}
+
+static volatile int lastStaDisconnectReason = -1;
+
+static const char *wifiDisconnectReasonString(int reason) {
+  switch (reason) {
+    case 2: return "auth expire";
+    case 15: return "4-way handshake timeout (wrong password?)";
+    case 201: return "no AP found (SSID / 5 GHz only?)";
+    case 202: return "auth fail (wrong password?)";
+    case 204: return "handshake timeout";
+    case 205: return "group key update timeout";
+    default: return "see esp_wifi_types.h WIFI_REASON_*";
+  }
+}
+
+static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    lastStaDisconnectReason = info.wifi_sta_disconnected.reason;
+    Serial.printf("\n[WiFi] STA disconnected reason=%d (%s)\n",
+                  lastStaDisconnectReason,
+                  wifiDisconnectReasonString(lastStaDisconnectReason));
   }
 }
 
 static void printWifiFailureHelp(wl_status_t status) {
   Serial.printf("Wi-Fi status=%d (%s)\n", (int)status, wifiStatusString(status));
+  if (lastStaDisconnectReason >= 0) {
+    Serial.printf("Last disconnect reason=%d (%s)\n",
+                  lastStaDisconnectReason,
+                  wifiDisconnectReasonString(lastStaDisconnectReason));
+  }
   Serial.println("STA tips: 2.4 GHz hotspot band; correct SSID/password; PC and ESP32 same network;");
   Serial.println("  iPhone: Settings -> Personal Hotspot -> Maximize Compatibility ON");
+}
+
+static void printApStatus() {
+  if (!wifi_soft_ap) {
+    Serial.println("[AP] not active (STA mode or Wi-Fi off)");
+    return;
+  }
+  Serial.println("--- Soft AP status ---");
+  Serial.printf("SSID=%s  pass=%s  channel=%d  broadcast=ON  WPA2-PSK\n",
+                WIFI_AP_SSID, WIFI_AP_PASS, WIFI_AP_CHANNEL);
+  Serial.printf("AP MAC=%s  IP=%s  TCP :%d\n",
+                WiFi.softAPmacAddress().c_str(),
+                WiFi.softAPIP().toString().c_str(), TCP_PORT);
+  Serial.printf("Stations connected: %u / %d\n",
+                WiFi.softAPgetStationNum(), WIFI_AP_MAX_CONN);
+  Serial.println("Serial command: AP?  (repeat this status)");
 }
 
 static bool startSoftApFallback() {
   WiFi.disconnect(true);
   delay(100);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
   WiFi.mode(WIFI_AP);
-  bool ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  // hidden=0 → SSID broadcast ON; password ≥8 → WPA2-PSK
+  bool ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CONN);
   if (!ok) {
     Serial.println("Soft AP start failed");
     return false;
   }
+  delay(500);  // let beacon stabilize before Windows scan
   wifi_up = true;
   wifi_soft_ap = true;
-  IPAddress apIp = WiFi.softAPIP();
-  Serial.printf("WiFi OK AP IP=%s  SSID=%s  pass=%s\n",
-                apIp.toString().c_str(), WIFI_AP_SSID, WIFI_AP_PASS);
-  Serial.println("PC: join Wi-Fi STEP_ESP32, then TCP/Open Ephys host 192.168.4.1 port 5000");
+  Serial.println("WiFi OK Soft AP started");
+  printApStatus();
+  Serial.println("PC: join Wi-Fi STEP_ESP32 (password step1234), then host 192.168.4.1:5000");
   return true;
 }
 
@@ -414,21 +483,50 @@ static void setupWifi() {
     return;
   }
 
+  char ssid[33];
+  char pass[64];
+  strncpy(ssid, WIFI_SSID, sizeof(ssid) - 1);
+  ssid[sizeof(ssid) - 1] = '\0';
+  strncpy(pass, WIFI_PASS, sizeof(pass) - 1);
+  pass[sizeof(pass) - 1] = '\0';
+  trimInPlace(ssid);
+  trimInPlace(pass);
+
   wifi_soft_ap = false;
+  lastStaDisconnectReason = -1;
+  WiFi.onEvent(onWifiEvent);
   WiFi.mode(WIFI_STA);
-  if (strlen(WIFI_PASS) == 0) {
-    Serial.printf("Connecting to open network %s (2.4 GHz)\n", WIFI_SSID);
-    WiFi.begin(WIFI_SSID);
+  WiFi.setSleep(false);  // iPhone hotspot: avoid ESP light-sleep during join
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+  if (strlen(pass) == 0) {
+    Serial.printf("Connecting to open network \"%s\" len=%u (2.4 GHz)\n",
+                  ssid, (unsigned)strlen(ssid));
+    WiFi.begin(ssid);
   } else {
-    Serial.printf("Connecting to %s (2.4 GHz)\n", WIFI_SSID);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.printf("Connecting to \"%s\" len=%u (2.4 GHz)\n",
+                  ssid, (unsigned)strlen(ssid));
+    WiFi.begin(ssid, pass);
   }
 
   uint32_t t0 = millis();
+  uint32_t lastStatusLog = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    if (millis() - t0 > (uint32_t)WIFI_STA_TIMEOUT_MS) {
+    uint32_t now = millis();
+    if (now - lastStatusLog >= 2500) {
+      lastStatusLog = now;
+      wl_status_t st = WiFi.status();
+      Serial.printf("\n  status=%d (%s)", (int)st, wifiStatusString(st));
+      if (lastStaDisconnectReason >= 0) {
+        Serial.printf(" disc_reason=%d (%s)",
+                      lastStaDisconnectReason,
+                      wifiDisconnectReasonString(lastStaDisconnectReason));
+      }
+      Serial.println();
+    }
+    if (now - t0 > (uint32_t)WIFI_STA_TIMEOUT_MS) {
       Serial.println();
       wl_status_t st = WiFi.status();
       printWifiFailureHelp(st);
@@ -512,6 +610,8 @@ void setup() {
 }
 
 void loop() {
+  pollSerialCommands();
+
 #if ENABLE_TCP && !ENABLE_SERIAL_BENCH
   if (wifi_up) {
     if (!client || !client.connected()) {

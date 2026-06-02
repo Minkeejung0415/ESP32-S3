@@ -23,7 +23,7 @@ Firmware reference: `arduino/step_node/step_node.ino` v1.3.0 · Host test: `host
 |--------|----------------------|--------------|--------|
 | Plugin on **Wi-Fi** | `false` | `true` | Node IP:5000; send `REDPITAYA\n` then `START\n` (matches `esp32_tcp_client.py`) |
 | Ephys Socket on **USB** | `true` | off (USB serial binary) | `serial_tcp_bridge.py COMx` → localhost:5000; GUI does **not** send handshake |
-| Plugin on **USB** | `true` or bridge | bridge may need to **proxy** `REDPITAYA`/`START` to COM | **Gap:** bridge optimized for Ephys Socket; may not satisfy `STARTED`/`SENSORS` lines Plugin expects |
+| Plugin on **USB** | `true` | `serial_tcp_bridge.py COMx --plugin` → `127.0.0.1:5000` | Bridge emits ESP32 + `OK CHANNELS`, `STARTED`, `SENSORS`; see [local-open-ephys-setup.md](local-open-ephys-setup.md) §8b |
 
 Plugin AcqBoard expects **TCP control on port 5000** with `REDPITAYA`/`START`. ESP32 already implements those commands on Wi-Fi TCP; replies differ from Red Pitaya (`OK CHANNELS`, `STARTED`, `SENSORS`) and samples ride **TCP** not **UDP 55001** — see [Protocol comparison](#protocol-comparison) and [Path B](#path-b--plugin-repo-acqboard-primary).
 

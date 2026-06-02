@@ -13,7 +13,7 @@ Detail and gap analysis: [docs/open-ephys-plugin.md](../docs/open-ephys-plugin.m
 | Step | ESP32-S3 repo | Plugin repo | Host test |
 |------|---------------|-------------|-----------|
 | **1** Single-node USB lab stream | `USB_OPEN_EPHYS_MODE true` + `serial_tcp_bridge.py` | Optional (Ephys Socket alternate only) | Open Ephys Ephys Socket @ 127.0.0.1:5000 |
-| **1b** Plugin AcqBoard on USB | Same USB binary **or** bridge that forwards `REDPITAYA`/`START` to device | Build GUI with Plugin; patch `acqboard.ccp` per doc §Path B | Plugin connects via bridge/TCP; 8 ch @ 100 Hz |
+| **1b** Plugin AcqBoard on USB | `USB_OPEN_EPHYS_MODE true` + `serial_tcp_bridge.py COMx --plugin` | Build GUI with Plugin (`217425a` + `e298679`) | Plugin **Node IP `127.0.0.1`**:5000; 8 ch @ 100 Hz |
 | **2** Plugin AcqBoard on Wi-Fi | `USB_OPEN_EPHYS_MODE false`, `ENABLE_TCP true`, Wi-Fi STA | Same Plugin patches + configurable ESP32 IP | `python host/esp32_tcp_client.py` then Plugin → node IP:5000 |
 | **3** OpenSim | — | Run `ephys_to_opensim_bridge.py` / `opensim_live_realtime.py` with ESP32 8-ch map | Open Ephys recording → bridge → OpenSim UDP :5000 |
 | **4** SD | `ENABLE_SD true` (Sense) | — | No Plugin change |
@@ -61,19 +61,14 @@ Do **not** duplicate C++ here; track in Plugin repo issues/PRs.
 |------|----------------------|--------------|-----------------|
 | Ephys Socket lab (alternate) | `true` | off (USB serial binary) | Not used — bridge → localhost:5000 |
 | Plugin on Wi-Fi | `false` | `true` | Node IP:5000; send `REDPITAYA`/`START` |
-| Plugin on USB via bridge | `true` or bridge-only | bridge must speak handshake if Plugin requires it | **Gap:** bridge today may not emit `STARTED`/`SENSORS` — see doc |
+| Plugin on USB via bridge | `true` | `serial_tcp_bridge.py COMx --plugin` | Node IP **127.0.0.1**; bridge emits handshake + TCP binary |
 
-**Known gaps (document only; fix in Plugin or firmware/bridge later):**
+**Known gaps (Wi‑Fi firmware path only):**
 
-- Firmware does not send `OK CHANNELS:8`, `STARTED`, or `SENSORS:` lines Red Pitaya plugin expects.
-- Plugin expects **UDP 55001** samples; ESP32 streams on **same TCP socket** after `START`.
-- `serial_tcp_bridge.py` is optimized for **Ephys Socket** (binary on localhost), not full Red Pitaya plugin dialog.
+- ESP32 TCP firmware does not send `OK CHANNELS:8`, `STARTED`, or `SENSORS:` (Plugin `e298679` tolerates ESP32 reply).
+- Plugin expects **UDP 55001** for Red Pitaya; ESP32 (and USB bridge) stream on **same TCP socket** after `START`.
 
-**Mitigations (pick one per lab):**
-
-1. Patch Plugin (recommended for STEP parity) — see Path B in `docs/open-ephys-plugin.md`.
-2. Patch ESP32 to Red Pitaya reply lines + optional UDP 55001.
-3. Extend `serial_tcp_bridge.py` to proxy text handshake + TCP binary to COM port.
+**USB bridge mitigation (step 1b):** `host/serial_tcp_bridge.py --plugin` — full text handshake on localhost + serial binary. Ephys Socket lab path: same script **without** `--plugin`.
 
 ---
 
@@ -87,9 +82,15 @@ python host\esp32_tcp_client.py
 # USB — Ephys Socket alternate (no Plugin)
 python host\serial_tcp_bridge.py COM5
 # Open Ephys: Ephys Socket → 127.0.0.1:5000
+
+# USB — Plugin AcqBoard (no Wi-Fi)
+python host\serial_tcp_bridge.py COM5 --plugin
+# Open Ephys Plugin: Node IP 127.0.0.1:5000
+set ESP32_NODE_HOST=127.0.0.1
+python host\esp32_tcp_client.py
 ```
 
-Plugin GUI: build from Plugin repo, select Red Pitaya / ESP32 board, set host to node IP or `127.0.0.1` if using a forwarding bridge.
+Plugin GUI: build from Plugin repo, select Red Pitaya / ESP32 board. Wi‑Fi: node IP from Serial Monitor. USB bridge: **Node IP `127.0.0.1`** with `--plugin` running.
 
 ---
 

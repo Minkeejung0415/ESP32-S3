@@ -62,6 +62,8 @@ Full steps: **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)**
 
 **Open Ephys / Plugin repo:** [docs/open-ephys-plugin.md](docs/open-ephys-plugin.md)
 
+**Full local setup (Windows):** [docs/local-open-ephys-setup.md](docs/local-open-ephys-setup.md)
+
 ## Red Pitaya parity
 
 | Parameter | Value |

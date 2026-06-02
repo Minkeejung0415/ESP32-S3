@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-USB Serial → TCP bridge for Open Ephys (Ephys Socket compatible).
+USB Serial → TCP bridge for Open Ephys.
 
 Use when the PC cannot join the ESP32 Wi-Fi (STEP_ESP32 Soft AP or hotspot).
 Board streams Open Ephys binary on USB; this script listens on localhost:5000.
@@ -10,12 +10,16 @@ Sketch preset — set `USB_OPEN_EPHYS_MODE true` in step_node.ino (or manually):
   ENABLE_SERIAL_BENCH true
   SERIAL_OUTPUT_BINARY true
 
-Windows example:
+Windows examples:
   pip install pyserial
+  # Built-in Ephys Socket (no REDPITAYA/START):
   python host/serial_tcp_bridge.py COM5
-  set SERIAL_PORT=COM5 && python host/serial_tcp_bridge.py
+  # Minkeejung0415/Plugin AcqBoard (REDPITAYA/START handshake):
+  python host/serial_tcp_bridge.py COM5 --plugin
 
-Open Ephys Ephys Socket: TCP client → 127.0.0.1:5000
+Open Ephys:
+  Ephys Socket → 127.0.0.1:5000
+  Plugin AcqBoard → Node IP 127.0.0.1:5000 (with --plugin)
 """
 from __future__ import annotations
 
@@ -35,10 +39,15 @@ HEADER = struct.Struct("<iiHiii")
 HEADER_SIZE = HEADER.size
 FRAME_PAYLOAD = 8 * 2  # 8 x int16
 FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
-HANDSHAKE_REPLY = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
+HANDSHAKE_REPLY_ESP32 = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
+HANDSHAKE_REPLY_OK_CHANNELS = b"OK CHANNELS:8\n"
+STARTED_REPLY = b"STARTED BIN:step_usb_bridge\n"
+SENSORS_REPLY = b"SENSORS:0,ICM20948\n"
 # Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
 OE_BIT_DEPTH_S16 = 3
 DEFAULT_FIRST_FRAME_TIMEOUT = 15.0
+HANDSHAKE_PEEK_TIMEOUT = 0.3
+PLUGIN_CMD_TIMEOUT = 120.0
 
 
 
@@ -264,22 +273,97 @@ async def read_line(reader: asyncio.StreamReader) -> str:
     return line.decode("utf-8", errors="replace").strip()
 
 
+def _first_command_line(peek: bytes) -> str:
+    return peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
+
+
+async def send_plugin_handshake_replies(writer: asyncio.StreamWriter) -> None:
+    """Match esp32_tcp_client / step_node.ino plus Red Pitaya lines for older Plugin builds."""
+    writer.write(HANDSHAKE_REPLY_ESP32)
+    writer.write(HANDSHAKE_REPLY_OK_CHANNELS)
+    await writer.drain()
+
+
+async def send_plugin_start_replies(writer: asyncio.StreamWriter) -> None:
+    writer.write(STARTED_REPLY)
+    writer.write(SENSORS_REPLY)
+    await writer.drain()
+
+
+def forward_serial_command(source: SerialFrameSource, command: str) -> None:
+    """Optional USB logging: firmware pollSerialCommands() accepts REDPITAYA/START."""
+    source.write_line(f"{command}\n")
+
+
+async def handle_plugin_handshake(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    source: SerialFrameSource,
+    first_frame_timeout: float,
+    verbose: bool,
+    verbose_frames: int,
+    initial_peek: bytes = b"",
+) -> None:
+    """REDPITAYA → channel replies; START → STARTED/SENSORS; then binary from serial."""
+    first_line = _first_command_line(initial_peek) if initial_peek else ""
+    if not first_line.upper().startswith("REDPITAYA"):
+        line = await asyncio.wait_for(read_line(reader), timeout=PLUGIN_CMD_TIMEOUT)
+        if not line.upper().startswith("REDPITAYA"):
+            logger.warning("Plugin mode expected REDPITAYA, got: %r", line)
+            return
+        first_line = line
+
+    logger.info("Plugin handshake REDPITAYA")
+    forward_serial_command(source, "REDPITAYA")
+    await send_plugin_handshake_replies(writer)
+
+    while True:
+        line = await asyncio.wait_for(read_line(reader), timeout=PLUGIN_CMD_TIMEOUT)
+        if not line:
+            logger.warning("Plugin client closed before START")
+            return
+        if line.upper().startswith("START"):
+            logger.info("Plugin START — streaming serial binary on TCP")
+            forward_serial_command(source, "START")
+            source.drain()
+            await send_plugin_start_replies(writer)
+            await stream_frames(
+                writer, source, first_frame_timeout, verbose, verbose_frames
+            )
+            return
+        logger.debug("Plugin ignored command while waiting for START: %r", line)
+
+
 async def handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    plugin_mode: bool = False,
     verbose: bool = False,
     verbose_frames: int = 5,
 ) -> None:
     peer = writer.get_extra_info("peername")
     logger.info("TCP client connected: %s", peer)
     try:
-        # Ephys Socket reads binary immediately; esp32_tcp_client sends REDPITAYA/START first.
+        # Ephys Socket reads binary immediately; Plugin / esp32_tcp_client send REDPITAYA first.
         try:
-            peek = await asyncio.wait_for(reader.read(256), timeout=0.05)
+            peek = await asyncio.wait_for(reader.read(256), timeout=HANDSHAKE_PEEK_TIMEOUT)
         except asyncio.TimeoutError:
             peek = b""
+
+        if plugin_mode:
+            logger.info("Plugin AcqBoard mode (--plugin)")
+            await handle_plugin_handshake(
+                reader,
+                writer,
+                source,
+                first_frame_timeout,
+                verbose,
+                verbose_frames,
+                initial_peek=peek,
+            )
+            return
 
         if not peek:
             logger.info("Ephys Socket mode — streaming binary (no handshake)")
@@ -288,24 +372,18 @@ async def handle_client(
             )
             return
 
-        first_line = peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
+        first_line = _first_command_line(peek)
         if first_line.upper().startswith("REDPITAYA"):
-            logger.info("handshake REDPITAYA")
-            source.write_line("REDPITAYA\n")
-            writer.write(HANDSHAKE_REPLY)
-            await writer.drain()
-            while True:
-                line = await asyncio.wait_for(read_line(reader), timeout=120.0)
-                if not line:
-                    break
-                if line.upper().startswith("START"):
-                    logger.info("START — forwarding serial stream")
-                    source.write_line("START\n")
-                    source.drain()
-                    await stream_frames(
-                        writer, source, first_frame_timeout, verbose, verbose_frames
-                    )
-                    break
+            logger.info("Plugin handshake auto-detected (REDPITAYA)")
+            await handle_plugin_handshake(
+                reader,
+                writer,
+                source,
+                first_frame_timeout,
+                verbose,
+                verbose_frames,
+                initial_peek=peek,
+            )
             return
 
         logger.info(
@@ -389,12 +467,19 @@ async def run_server(
     port: int,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    plugin_mode: bool,
     verbose: bool,
     verbose_frames: int,
 ) -> None:
     server = await asyncio.start_server(
         lambda r, w: handle_client(
-            r, w, source, first_frame_timeout, verbose, verbose_frames
+            r,
+            w,
+            source,
+            first_frame_timeout,
+            plugin_mode,
+            verbose,
+            verbose_frames,
         ),
         bind,
         port,
@@ -418,6 +503,11 @@ def main() -> None:
     p.add_argument("--baud", type=int, default=int(os.environ.get("SERIAL_BAUD", "115200")))
     p.add_argument("--bind", default=os.environ.get("BRIDGE_BIND", "127.0.0.1"))
     p.add_argument("--tcp-port", type=int, default=int(os.environ.get("BRIDGE_PORT", "5000")))
+    p.add_argument(
+        "--plugin",
+        action="store_true",
+        help="Plugin AcqBoard mode: wait for REDPITAYA/START, emit STARTED/SENSORS, then stream",
+    )
     p.add_argument(
         "--csv",
         action="store_true",
@@ -447,13 +537,17 @@ def main() -> None:
         sys.exit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    mode = "CSV" if args.csv else "Open Ephys binary"
-    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} ({mode})")
+    payload = "CSV" if args.csv else "Open Ephys binary"
+    client_mode = "Plugin AcqBoard (--plugin)" if args.plugin else "Ephys Socket or auto Plugin"
+    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} ({payload}; {client_mode})")
     print(
         "Close Serial Monitor before starting. "
-        "Flash with USB_OPEN_EPHYS_MODE true; wait >5 s after boot. "
-        "Open Ephys: Ephys Socket → 127.0.0.1:5000"
+        "Flash with USB_OPEN_EPHYS_MODE true; wait >5 s after boot."
     )
+    if args.plugin:
+        print("Open Ephys Plugin AcqBoard: Node IP 127.0.0.1 (port 5000)")
+    else:
+        print("Open Ephys Ephys Socket → 127.0.0.1:5000 (or use --plugin for AcqBoard)")
 
     source = SerialFrameSource(args.port, args.baud, csv_mode=args.csv)
     source.start()
@@ -477,6 +571,7 @@ def main() -> None:
                 args.tcp_port,
                 source,
                 args.first_frame_timeout,
+                args.plugin,
                 args.verbose,
                 args.verbose_frames,
             )
