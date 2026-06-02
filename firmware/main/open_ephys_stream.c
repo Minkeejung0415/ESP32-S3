@@ -41,7 +41,7 @@ static void pack_packet(const oe_sample_t *s, uint8_t *out, size_t *out_len)
     oe_header_t hdr = {
         .offset = 0,
         .num_bytes = num_bytes,
-        .bit_depth = 16,
+        .bit_depth = 3,  /* Open Ephys Ephys Socket: OpenCV S16 depth enum */
         .element_size = element_size,
         .num_channels = num_ch,
         .samples_per_channel = n_per_ch,

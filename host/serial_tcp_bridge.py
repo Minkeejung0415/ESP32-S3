@@ -36,6 +36,8 @@ HEADER_SIZE = HEADER.size
 FRAME_PAYLOAD = 8 * 2  # 8 x int16
 FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
 HANDSHAKE_REPLY = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
+# Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
+OE_BIT_DEPTH_S16 = 3
 
 
 def open_serial(port: str, baud: int):
