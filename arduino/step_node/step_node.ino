@@ -87,11 +87,20 @@ p_compat_gateway.py COM5  (UDP :55001 + hosts.txt — no Plugin rebuild)
 #define PIN_DIO 1       // XIAO D0 / GPIO1 — change via #define if wired elsewhere
 #define ICM20948_ADDR 0x69
 
+// true = USB → PC bridge (default). false = Wi-Fi TCP :5000.
+#define USB_OPEN_EPHYS_MODE true
+
 #define NODE_IS_MASTER true
 #define ENABLE_SD false
+#if USB_OPEN_EPHYS_MODE
+#define ENABLE_TCP false
+#define ENABLE_SERIAL_BENCH true
+#define SERIAL_OUTPUT_BINARY true
+#else
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false
 #define SERIAL_OUTPUT_BINARY false
+#endif
 #define PIN_SD_CS 21
 
 #define ICM_REG_BANK_SEL 0x7F
