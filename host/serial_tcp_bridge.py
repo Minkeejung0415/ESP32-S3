@@ -191,6 +191,8 @@ async def handle_client(
                 source.drain()
                 writer.write(b"STARTED\n")
                 await writer.drain()
+                writer.write(b"SENSORS:0,ICM20948\n")
+                await writer.drain()
                 await stream_frames(reader, writer, source)
                 break
             elif upper.startswith("FILTER"):
