@@ -1,0 +1,9 @@
+# Add ONE line to the hosts file so the Plugin reaches the USB gateway (no Plugin rebuild).
+#
+# Windows (Run as Administrator):
+#   notepad C:\Windows\System32\drivers\etc\hosts
+#
+# macOS / Linux:
+#   sudo nano /etc/hosts
+#
+127.0.0.1 rp-f0f85a.local rp-f0cd35.local
