@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-USB Serial → TCP bridge for Open Ephys (Ephys Socket compatible).
+USB Serial → TCP bridge for Open Ephys Acquisition Board / custom TCP clients.
 
 Use when the PC cannot join the ESP32 Wi-Fi (STEP_ESP32 Soft AP or hotspot).
 Board streams Open Ephys binary on USB; this script listens on localhost:5000.
@@ -13,9 +13,9 @@ Sketch preset (USB_OPEN_EPHYS_MODE in step_node.ino):
 Windows example:
   pip install pyserial
   python host/serial_tcp_bridge.py COM5
-  set SERIAL_PORT=COM5 && python host/serial_tcp_bridge.py
 
-Open Ephys Ephys Socket: TCP client → 127.0.0.1:5000
+Open Ephys custom Acquisition Board: TCP client → 127.0.0.1:5000
+Legacy 8-channel firmware: set ESP32_NUM_CHANNELS=8
 """
 from __future__ import annotations
 
@@ -33,9 +33,11 @@ logger = logging.getLogger(__name__)
 
 HEADER = struct.Struct("<iiHiii")
 HEADER_SIZE = HEADER.size
-FRAME_PAYLOAD = 8 * 2  # 8 x int16
-FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
-HANDSHAKE_REPLY = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
+DEFAULT_NUM_CHANNELS = int(os.environ.get("ESP32_NUM_CHANNELS", "11"))
+HANDSHAKE_REPLY_OK = b"OK CHANNELS:11\n"
+HANDSHAKE_REPLY = (
+    b"11 channels; sample_rate=100; fusion=madgwick; node=esp32s3_arduino\n"
+)
 
 
 def open_serial(port: str, baud: int):
@@ -49,36 +51,38 @@ def open_serial(port: str, baud: int):
     return ser
 
 
-def pack_csv_row(fields: list[str]) -> bytes | None:
-    """Convert CSV seq,ax,...,cam (9 fields) to one Open Ephys frame."""
-    if len(fields) < 9:
+def pack_csv_row(fields: list[str], num_ch: int) -> bytes | None:
+    need = num_ch + 1
+    if len(fields) < need:
         return None
     try:
         _seq = int(fields[0])
-        ch = [int(fields[i]) for i in range(1, 9)]
+        ch = [int(fields[i]) for i in range(1, need)]
     except ValueError:
         return None
-    hdr = HEADER.pack(0, FRAME_PAYLOAD, 16, 2, 8, 1)
-    return hdr + struct.pack("<8h", *ch)
+    payload = num_ch * 2
+    hdr = HEADER.pack(0, payload, 16, 2, num_ch, 1)
+    return hdr + struct.pack(f"<{num_ch}h", *ch)
 
 
-def is_valid_header(hdr: tuple) -> bool:
+def is_valid_header(hdr: tuple, num_ch: int) -> bool:
     _off, num_bytes, bit_depth, elem, n_ch, n_per = hdr
     return (
         elem == 2
         and bit_depth == 16
-        and n_ch == 8
+        and n_ch == num_ch
         and n_per == 1
-        and num_bytes == FRAME_PAYLOAD
+        and num_bytes == num_ch * 2
     )
 
 
 class SerialFrameSource:
     """Background thread: parse binary (or CSV) frames from USB serial."""
 
-    def __init__(self, port: str, baud: int, csv_mode: bool) -> None:
+    def __init__(self, port: str, baud: int, csv_mode: bool, num_ch: int) -> None:
         self._ser = open_serial(port, baud)
         self._csv_mode = csv_mode
+        self._num_ch = num_ch
         self._buf = bytearray()
         self._queue: deque[bytes] = deque(maxlen=256)
         self._lock = threading.Lock()
@@ -135,20 +139,21 @@ class SerialFrameSource:
             if text.startswith("seq,"):
                 continue
             parts = text.split(",")
-            frame = pack_csv_row(parts)
+            frame = pack_csv_row(parts, self._num_ch)
             if frame:
                 self._push_frame(frame)
 
     def _parse_binary(self) -> None:
         while len(self._buf) >= HEADER_SIZE:
             hdr = HEADER.unpack_from(self._buf, 0)
-            if not is_valid_header(hdr):
+            if not is_valid_header(hdr, self._num_ch):
                 del self._buf[0]
                 continue
-            if len(self._buf) < FRAME_SIZE:
+            frame_bytes = HEADER_SIZE + hdr[1]
+            if len(self._buf) < frame_bytes:
                 break
-            frame = bytes(self._buf[:FRAME_SIZE])
-            del self._buf[:FRAME_SIZE]
+            frame = bytes(self._buf[:frame_bytes])
+            del self._buf[:frame_bytes]
             self._push_frame(frame)
 
 
@@ -161,6 +166,7 @@ async def handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
+    num_ch: int,
 ) -> None:
     peer = writer.get_extra_info("peername")
     logger.info("TCP client connected: %s", peer)
@@ -173,14 +179,23 @@ async def handle_client(
             if upper.startswith("REDPITAYA"):
                 logger.info("handshake REDPITAYA")
                 source.write_line("REDPITAYA\n")
-                writer.write(HANDSHAKE_REPLY)
+                writer.write(f"OK CHANNELS:{num_ch}\n".encode())
+                await writer.drain()
+                writer.write(
+                    f"{num_ch} channels; sample_rate=100; fusion=madgwick; node=esp32s3_arduino\n".encode()
+                )
                 await writer.drain()
             elif upper.startswith("START"):
                 logger.info("START — forwarding serial stream")
                 source.write_line("START\n")
                 source.drain()
+                writer.write(b"STARTED\n")
+                await writer.drain()
                 await stream_frames(reader, writer, source)
                 break
+            elif upper.startswith("FILTER"):
+                logger.info("FILTER command: %s", line)
+                source.write_line(line + "\n")
             else:
                 logger.debug("ignore command: %s", line)
     except asyncio.TimeoutError:
@@ -214,9 +229,10 @@ async def run_server(
     bind: str,
     port: int,
     source: SerialFrameSource,
+    num_ch: int,
 ) -> None:
     server = await asyncio.start_server(
-        lambda r, w: handle_client(r, w, source),
+        lambda r, w: handle_client(r, w, source, num_ch),
         bind,
         port,
     )
@@ -250,14 +266,16 @@ def main() -> None:
         print("Usage: python host/serial_tcp_bridge.py COM5", file=sys.stderr)
         sys.exit(1)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port}")
-    print("Close Serial Monitor before starting. Open Ephys: Ephys Socket → 127.0.0.1:5000")
+    num_ch = int(os.environ.get("ESP32_NUM_CHANNELS", str(DEFAULT_NUM_CHANNELS)))
 
-    source = SerialFrameSource(args.port, args.baud, csv_mode=args.csv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} ({num_ch} ch)")
+    print("Close Serial Monitor before starting.")
+
+    source = SerialFrameSource(args.port, args.baud, csv_mode=args.csv, num_ch=num_ch)
     source.start()
     try:
-        asyncio.run(run_server(args.bind, args.tcp_port, source))
+        asyncio.run(run_server(args.bind, args.tcp_port, source, num_ch))
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

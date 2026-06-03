@@ -21,7 +21,7 @@
  *
  * --- USB_OPEN_EPHYS_MODE (no Wi-Fi — PC cannot join STEP_ESP32) ---
  * Run on PC: python host/serial_tcp_bridge.py COM5
- * Open Ephys Ephys Socket → 127.0.0.1:5000
+ * Open Ephys Acquisition Board: serial_tcp_bridge.py → 127.0.0.1:5000
  * #define ENABLE_TCP false
  * #define ENABLE_SERIAL_BENCH true
  * #define SERIAL_OUTPUT_BINARY true
@@ -43,8 +43,9 @@
 #include <SPI.h>
 #include <math.h>
 #include <string.h>
+#include "imu_fusion.h"
 
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.4.0"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
 #define BOOT_DIAGNOSTICS true
@@ -62,7 +63,11 @@
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
-#define NUM_CHANNELS 8
+#define NUM_CHANNELS 11
+#define CH_QUAT_W 7
+#define CH_QUAT_X 8
+#define CH_QUAT_Y 9
+#define CH_QUAT_Z 10
 
 #define PIN_I2C_SDA 5   // XIAO D4 / GPIO5
 #define PIN_I2C_SCL 6   // XIAO D5 / GPIO6
@@ -101,6 +106,9 @@ bool wifi_soft_ap = false;
 
 uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
+int16_t imu_raw[6];
+ImuFusion fusion;
+bool filter_enabled = false;
 bool icm_ok = false;
 uint8_t icm_addr = ICM20948_ADDR;
 uint32_t boot_ms = 0;
@@ -299,6 +307,40 @@ static void fillOeHeader(OeHeader *hdr) {
   hdr->num_bytes = NUM_CHANNELS * 1 * 2;
 }
 
+static void packStreamChannels() {
+  float lin_g[3];
+  fusionLinearAccel(&fusion, imu_raw, lin_g);
+
+  if (filter_enabled) {
+    channels[0] = accelGToInt16(lin_g[0]);
+    channels[1] = accelGToInt16(lin_g[1]);
+    channels[2] = accelGToInt16(lin_g[2]);
+  } else {
+    channels[0] = imu_raw[0];
+    channels[1] = imu_raw[1];
+    channels[2] = imu_raw[2];
+  }
+  channels[3] = imu_raw[3];
+  channels[4] = imu_raw[4];
+  channels[5] = imu_raw[5];
+  channels[6] = packDioCh6();
+  channels[CH_QUAT_W] = quatToInt16(fusion.q0);
+  channels[CH_QUAT_X] = quatToInt16(fusion.q1);
+  channels[CH_QUAT_Y] = quatToInt16(fusion.q2);
+  channels[CH_QUAT_Z] = quatToInt16(fusion.q3);
+}
+
+static void applyFilterCommand(const String &line) {
+  if (line.equalsIgnoreCase("FILTER") || line.equalsIgnoreCase("FILTER 1") ||
+      line.equalsIgnoreCase("FILTER ON")) {
+    filter_enabled = true;
+    Serial.println("FILTER 1");
+  } else if (line.equalsIgnoreCase("FILTER 0") || line.equalsIgnoreCase("FILTER OFF")) {
+    filter_enabled = false;
+    Serial.println("FILTER 0");
+  }
+}
+
 #if ENABLE_ESPNOW
 static void sendEspNowSync() {
   if (!NODE_IS_MASTER || !wifi_up) return;
@@ -321,8 +363,8 @@ static void packAndSendTcp() {
 static void sendSerialBench() {
 #if ENABLE_SERIAL_BENCH
   if (!csv_banner_sent) {
-    Serial.printf("# STEP boot complete icm=%s addr=0x%02X dio_ch6=level|edges\n",
-                  icm_ok ? "OK" : "FALLBACK", icm_addr);
+    Serial.printf("# STEP v%s icm=%s ch0-5=imu ch6=dio ch7-10=quat FILTER toggles ch0-2\n",
+                  FIRMWARE_VERSION, icm_ok ? "OK" : "FALLBACK");
     csv_banner_sent = true;
   }
 #if SERIAL_OUTPUT_BINARY
@@ -331,9 +373,10 @@ static void sendSerialBench() {
   Serial.write((uint8_t *)&hdr, sizeof(hdr));
   Serial.write((uint8_t *)channels, sizeof(channels));
 #else
-  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d\n",
+  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
                 (unsigned long)seq, channels[0], channels[1], channels[2],
-                channels[3], channels[4], channels[5], channels[6], channels[7]);
+                channels[3], channels[4], channels[5], channels[6],
+                channels[CH_QUAT_W], channels[CH_QUAT_X], channels[CH_QUAT_Y], channels[CH_QUAT_Z]);
 #endif
 #endif
 }
@@ -352,10 +395,18 @@ static void logSd() {
 
 static void handleLine(const String &line) {
   if (line.startsWith("REDPITAYA")) {
-    client.print("8 channels; sample_rate=100; node=esp32s3_arduino\n");
+    client.printf("OK CHANNELS:%d\n", NUM_CHANNELS);
+    client.printf("%d channels; sample_rate=%d; fusion=madgwick; node=esp32s3_arduino\n",
+                  NUM_CHANNELS, SAMPLE_HZ);
   } else if (line.startsWith("START")) {
     streaming = true;
+    client.println("STARTED");
     Serial.println("TCP streaming START");
+  } else if (line.startsWith("FILTER")) {
+    applyFilterCommand(line);
+    if (client && client.connected()) {
+      client.println(filter_enabled ? "FILTER 1" : "FILTER 0");
+    }
   }
 }
 
@@ -525,13 +576,27 @@ void loop() {
 
   static uint32_t last_us = 0;
   uint32_t now = micros();
+  if (last_us == 0) {
+    last_us = now;
+    return;
+  }
   if (now - last_us < (1000000UL / SAMPLE_HZ)) return;
+  float dt_s = (now - last_us) * 1e-6f;
+  if (dt_s > 0.05f) dt_s = 1.0f / (float)SAMPLE_HZ;
   last_us = now;
 
-  readImu(channels);
+  readImu(imu_raw);
+  fusionUpdate(&fusion, imu_raw, dt_s);
   updateDio();
-  channels[6] = packDioCh6();
-  channels[7] = 0;
+  packStreamChannels();
+
+#if ENABLE_SERIAL_BENCH
+  while (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length()) applyFilterCommand(cmd);
+  }
+#endif
 
   sendEspNowSync();
   packAndSendTcp();

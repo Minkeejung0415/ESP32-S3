@@ -41,7 +41,7 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `8 channels; sample_rate=100; node=esp32s3_arduino\n` |
 | `START\n` reply | `STARTED BIN:… CSV:…\n` then `SENSORS:0,ICM20948;…\n` | Sets streaming; **no STARTED / SENSORS lines** |
 | Sample rate | Configurable (`FREQ:`), default 100 Hz | Fixed **100 Hz** |
-| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **8** int16 |
+| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **11** int16 (v1.4: raw/filt IMU + DIO + quat) |
 | Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout |
 | Payload | int16 channel-major | int16 channel-major |
 | ch0–5 | IMU (scaled in plugin by sensor preset) | ICM20948 ax, ay, az, gx, gy, gz (raw int16) |

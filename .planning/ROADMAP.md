@@ -11,7 +11,7 @@
 **Requirements:** ARD-01, FW-02, FW-04, FW-05  
 **Success Criteria:**
 1. Sketch uploads on XIAO ESP32S3
-2. Host receives 100 Hz ch0–5 with REDPITAYA/START handshake
+2. Host receives 100 Hz ch0–10 (11 ch) with REDPITAYA/START; quat on ch7–10
 3. Serial bench mode CSV optional for desk test
 
 ### Phase 2: DIO Channel Extension
