@@ -38,10 +38,11 @@ logger = logging.getLogger(__name__)
 
 HEADER = struct.Struct("<iiHiii")
 HEADER_SIZE = HEADER.size
-FRAME_PAYLOAD = 8 * 2  # 8 x int16
+DEFAULT_NUM_CHANNELS = int(os.environ.get("ESP32_NUM_CHANNELS", "11"))
+FRAME_PAYLOAD = DEFAULT_NUM_CHANNELS * 2
 FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
-HANDSHAKE_REPLY_ESP32 = b"8 channels; sample_rate=100; node=esp32s3_arduino\n"
-HANDSHAKE_REPLY_OK_CHANNELS = b"OK CHANNELS:8\n"
+HANDSHAKE_REPLY_ESP32 = b"11 channels; sample_rate=100; fusion=madgwick; node=esp32s3_arduino\n"
+HANDSHAKE_REPLY_OK_CHANNELS = b"OK CHANNELS:11\n"
 STARTED_REPLY = b"STARTED BIN:step_usb_bridge\n"
 SENSORS_REPLY = b"SENSORS:0,ICM20948\n"
 # Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
@@ -72,8 +73,8 @@ def pack_csv_row(fields: list[str]) -> bytes | None:
         ch = [int(fields[i]) for i in range(1, 9)]
     except ValueError:
         return None
-    hdr = HEADER.pack(0, FRAME_PAYLOAD, OE_BIT_DEPTH_S16, 2, 8, 1)
-    return hdr + struct.pack("<8h", *ch)
+    hdr = HEADER.pack(0, FRAME_PAYLOAD, OE_BIT_DEPTH_S16, 2, DEFAULT_NUM_CHANNELS, 1)
+    return hdr + struct.pack(f"<{len(ch)}h", *ch)
 
 
 def payload_bytes_from_header(hdr: tuple) -> int | None:

@@ -5,7 +5,7 @@
  * Guide: docs/arduino-ide-guide.md
  *
  * --- Wi-Fi connect timeout fallback ---
- * If STA join fails (45 s), firmware starts Soft AP: SSID STEP_ESP32, pass step1234.
+ * If STA join fails (30 s), firmware starts Soft AP: SSID STEP_ESP32, pass step1234.
  * On your PC: join Wi-Fi "STEP_ESP32" (password step1234), then Open Ephys / TCP host 192.168.4.1:5000.
  *
  * --- Phone hotspot: use 2.4 GHz band only (ESP32-S3 does not join 5 GHz-only APs). ---
@@ -20,10 +20,13 @@
  * --- end preset ---
  *
  * --- USB_OPEN_EPHYS_MODE (USB power + PC — Wi-Fi not required for Open Ephys) ---
- * Plugin Acq Board: host\run_usb_plugin_bridge.ps1 COM5  (or serial_tcp_bridge.py COM5 --plugin)
- *   → Open Ephys Node IP 127.0.0.1:5000 — NOT the ESP32 Wi-Fi IP; bridge speaks REDPITAYA/START.
- * Ephys Socket (no Plugin build): serial_tcp_bridge.py COM5 without --plugin.
- * Set USB_OPEN_EPHYS_MODE true below (or copy these defines):
+ * Plugin Acq Board: host
+un_usb_plugin_bridge.ps1 COM5  (or serial_tcp_bridge.py COM5 --plugin)
+ *   Or: host
+p_compat_gateway.py COM5  (UDP :55001 + hosts.txt — no Plugin rebuild)
+ *   → Open Ephys Node IP 127.0.0.1:5000 — NOT the ESP32 Wi-Fi IP.
+ * Ephys Socket: serial_tcp_bridge.py COM5 without --plugin.
+ * Set USB_OPEN_EPHYS_MODE true below:
  * #define ENABLE_TCP false
  * #define ENABLE_SERIAL_BENCH true
  * #define SERIAL_OUTPUT_BINARY true
@@ -45,8 +48,9 @@
 #include <SPI.h>
 #include <math.h>
 #include <string.h>
+#include "imu_fusion.h"
 
-#define FIRMWARE_VERSION "1.3.4"
+#define FIRMWARE_VERSION "1.4.1"
 #define WIFI_HOSTNAME "step-esp32"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
@@ -61,16 +65,22 @@
 // Soft AP fallback after STA timeout (automatic — do not need to edit unless renaming lab AP)
 #define WIFI_AP_SSID "STEP_ESP32"
 #define WIFI_AP_PASS "step1234"
-#define WIFI_AP_CHANNEL 6       // 2.4 GHz only — use 1, 6, or 11; explicit helps Windows join
+#define WIFI_AP_CHANNEL 6
 #define WIFI_AP_MAX_CONN 4
 #define WIFI_STA_TIMEOUT_MS 45000
-// XIAO boards: high TX can desense the onboard antenna — try lower if STA/AP both fail
 #define WIFI_TX_POWER_STA WIFI_POWER_8_5dBm
 #define WIFI_TX_POWER_AP WIFI_POWER_8_5dBm
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ 100
-#define NUM_CHANNELS 8
+#define NUM_CHANNELS 11
+#define CH_QUAT_W 7
+#define CH_QUAT_X 8
+#define CH_QUAT_Y 9
+#define CH_QUAT_Z 10
+
+// Filter always on: ch0-2 = gravity-removed accel (no Plugin changes).
+#define FILTER_PERMANENT true
 
 #define PIN_I2C_SDA 5   // XIAO D4 / GPIO5
 #define PIN_I2C_SCL 6   // XIAO D5 / GPIO6
@@ -79,21 +89,9 @@
 
 #define NODE_IS_MASTER true
 #define ENABLE_SD false
-
-// true = USB binary @100 Hz 8ch → serial_tcp_bridge.py [--plugin] → 127.0.0.1:5000 (no Wi-Fi for OE).
-// false = Wi-Fi TCP :5000 on board; Plugin uses Serial Monitor IP, not 127.0.0.1.
-#define USB_OPEN_EPHYS_MODE true
-
-#if USB_OPEN_EPHYS_MODE
-#define ENABLE_TCP false
-#define ENABLE_SERIAL_BENCH true
-#define SERIAL_OUTPUT_BINARY true
-#else
 #define ENABLE_TCP true
 #define ENABLE_SERIAL_BENCH false
 #define SERIAL_OUTPUT_BINARY false
-#endif
-
 #define PIN_SD_CS 21
 
 #define ICM_REG_BANK_SEL 0x7F
@@ -121,6 +119,9 @@ bool wifi_soft_ap = false;
 
 uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
+int16_t imu_raw[6];
+ImuFusion fusion;
+bool filter_enabled = FILTER_PERMANENT;
 bool icm_ok = false;
 uint8_t icm_addr = ICM20948_ADDR;
 uint32_t boot_ms = 0;
@@ -315,8 +316,42 @@ static void fillOeHeader(OeHeader *hdr) {
   hdr->num_channels = NUM_CHANNELS;
   hdr->samples_per_channel = 1;
   hdr->element_size = 2;
-  hdr->bit_depth = 3;  // Open Ephys Ephys Socket: OpenCV S16 enum
+  hdr->bit_depth = 16;
   hdr->num_bytes = NUM_CHANNELS * 1 * 2;
+}
+
+static void packStreamChannels() {
+  float lin_g[3];
+  fusionLinearAccel(&fusion, imu_raw, lin_g);
+
+  if (filter_enabled) {
+    channels[0] = accelGToInt16(lin_g[0]);
+    channels[1] = accelGToInt16(lin_g[1]);
+    channels[2] = accelGToInt16(lin_g[2]);
+  } else {
+    channels[0] = imu_raw[0];
+    channels[1] = imu_raw[1];
+    channels[2] = imu_raw[2];
+  }
+  channels[3] = imu_raw[3];
+  channels[4] = imu_raw[4];
+  channels[5] = imu_raw[5];
+  channels[6] = packDioCh6();
+  channels[CH_QUAT_W] = quatToInt16(fusion.q0);
+  channels[CH_QUAT_X] = quatToInt16(fusion.q1);
+  channels[CH_QUAT_Y] = quatToInt16(fusion.q2);
+  channels[CH_QUAT_Z] = quatToInt16(fusion.q3);
+}
+
+static void applyFilterCommand(const String &line) {
+  if (line.equalsIgnoreCase("FILTER") || line.equalsIgnoreCase("FILTER 1") ||
+      line.equalsIgnoreCase("FILTER ON")) {
+    filter_enabled = true;
+    Serial.println("FILTER 1");
+  } else if (line.equalsIgnoreCase("FILTER 0") || line.equalsIgnoreCase("FILTER OFF")) {
+    filter_enabled = false;
+    Serial.println("FILTER 0");
+  }
 }
 
 #if ENABLE_ESPNOW
@@ -341,8 +376,8 @@ static void packAndSendTcp() {
 static void sendSerialBench() {
 #if ENABLE_SERIAL_BENCH
   if (!csv_banner_sent) {
-    Serial.printf("# STEP boot complete icm=%s addr=0x%02X dio_ch6=level|edges\n",
-                  icm_ok ? "OK" : "FALLBACK", icm_addr);
+    Serial.printf("# STEP v%s icm=%s ch0-2=filtered accel ch3-5=gyro ch6=dio ch7-10=quat\n",
+                  FIRMWARE_VERSION, icm_ok ? "OK" : "FALLBACK");
     csv_banner_sent = true;
   }
 #if SERIAL_OUTPUT_BINARY
@@ -351,9 +386,10 @@ static void sendSerialBench() {
   Serial.write((uint8_t *)&hdr, sizeof(hdr));
   Serial.write((uint8_t *)channels, sizeof(channels));
 #else
-  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d\n",
+  Serial.printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
                 (unsigned long)seq, channels[0], channels[1], channels[2],
-                channels[3], channels[4], channels[5], channels[6], channels[7]);
+                channels[3], channels[4], channels[5], channels[6],
+                channels[CH_QUAT_W], channels[CH_QUAT_X], channels[CH_QUAT_Y], channels[CH_QUAT_Z]);
 #endif
 #endif
 }
@@ -370,92 +406,11 @@ static void logSd() {
 #endif
 }
 
-static void replyToHost(const char *text) {
-#if ENABLE_TCP && !ENABLE_SERIAL_BENCH
-  if (client && client.connected())
-    client.print(text);
-#else
-  (void)text;  // Plugin USB path: bridge answers REDPITAYA/START on TCP; optional log only
-#endif
-}
-
-static void handleLine(const String &line) {
-  if (line.startsWith("REDPITAYA")) {
-    replyToHost("8 channels; sample_rate=100; node=esp32s3_arduino\n");
-    replyToHost("OK CHANNELS:8\n");
-  } else if (line.startsWith("START")) {
-    streaming = true;
-    replyToHost("STARTED BIN:esp32s3_arduino\n");
-    replyToHost("SENSORS:0,ICM20948\n");
-    Serial.println("START accepted (USB: bridge streams; Wi-Fi: TCP binary)");
-  } else if (line.equalsIgnoreCase("AP?") || line.equalsIgnoreCase("WIFI?") ||
-             line.equalsIgnoreCase("STATUS")) {
-    printWifiStatus();
-  }
-}
-
 static void pollSerialCommands() {
   if (!Serial.available()) return;
   String line = Serial.readStringUntil('\n');
   line.trim();
   if (line.length()) handleLine(line);
-}
-
-static const char *wifiStatusString(wl_status_t status) {
-  switch (status) {
-    case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
-    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL (SSID not found / wrong name / 5 GHz only?)";
-    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
-    case WL_CONNECTED: return "WL_CONNECTED";
-    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED (wrong password?)";
-    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
-    case WL_DISCONNECTED: return "WL_DISCONNECTED (auth timeout / AP rejected / incompatible security?)";
-    default: return "unknown";
-  }
-}
-
-static void trimInPlace(char *s) {
-  if (!s || !*s) return;
-  char *start = s;
-  while (*start == ' ' || *start == '\t') start++;
-  if (start != s) memmove(s, start, strlen(start) + 1);
-  size_t n = strlen(s);
-  while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
-}
-
-static volatile int lastStaDisconnectReason = -1;
-
-static const char *wifiDisconnectReasonString(int reason) {
-  switch (reason) {
-    case 2: return "auth expire";
-    case 15: return "4-way handshake timeout (wrong password?)";
-    case 39: return "timeout";
-    case 201: return "no AP found (SSID / 5 GHz only / hidden?)";
-    case 202: return "auth fail (wrong password / WPA3-only AP?)";
-    case 204: return "handshake timeout";
-    case 205: return "group key update timeout";
-    default: return "see esp_wifi_types.h WIFI_REASON_*";
-  }
-}
-
-static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
-  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-    lastStaDisconnectReason = info.wifi_sta_disconnected.reason;
-    Serial.printf("\n[WiFi] STA disconnected reason=%d (%s)\n",
-                  lastStaDisconnectReason,
-                  wifiDisconnectReasonString(lastStaDisconnectReason));
-  }
-}
-
-static void printWifiFailureHelp(wl_status_t status) {
-  Serial.printf("Wi-Fi status=%d (%s)\n", (int)status, wifiStatusString(status));
-  if (lastStaDisconnectReason >= 0) {
-    Serial.printf("Last disconnect reason=%d (%s)\n",
-                  lastStaDisconnectReason,
-                  wifiDisconnectReasonString(lastStaDisconnectReason));
-  }
-  Serial.println("STA tips: 2.4 GHz hotspot band; correct SSID/password; PC and ESP32 same network;");
-  Serial.println("  iPhone: Settings -> Personal Hotspot -> Maximize Compatibility ON");
 }
 
 static void printWifiStatus() {
@@ -489,121 +444,109 @@ static void printWifiStatus() {
   Serial.println("Serial command: STATUS  (repeat)");
 }
 
+static void replyToHost(const char *text) {
+#if ENABLE_TCP && !ENABLE_SERIAL_BENCH
+  if (client && client.connected())
+    client.print(text);
+#else
+  (void)text;
+#endif
+}
+
+static void handleLine(const String &line) {
+  if (line.startsWith("REDPITAYA")) {
+    replyToHost("OK CHANNELS:11\n");
+    replyToHost("11 channels; sample_rate=100; fusion=madgwick; node=esp32s3_arduino\n");
+  } else if (line.startsWith("START")) {
+    streaming = true;
+    replyToHost("STARTED\n");
+    replyToHost("SENSORS:0,ICM20948\n");
+    Serial.println("START accepted");
+  } else if (line.startsWith("FILTER")) {
+    applyFilterCommand(line);
+    replyToHost(filter_enabled ? "FILTER 1\n" : "FILTER 0\n");
+  } else if (line.equalsIgnoreCase("AP?") || line.equalsIgnoreCase("WIFI?") ||
+             line.equalsIgnoreCase("STATUS")) {
+    printWifiStatus();
+  }
+}
+
+static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    lastStaDisconnectReason = info.wifi_sta_disconnected.reason;
+    Serial.printf("\n[WiFi] STA disconnected reason=%d (%s)\n",
+                  lastStaDisconnectReason,
+                  wifiDisconnectReasonString(lastStaDisconnectReason));
+  }
+}
+
+static void trimInPlace(char *s) {
+  if (!s || !*s) return;
+  char *start = s;
+  while (*start == ' ' || *start == '\t') start++;
+  if (start != s) memmove(s, start, strlen(start) + 1);
+  size_t n = strlen(s);
+  while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
+}
+
+static const char *wifiStatusString(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL (SSID not found / wrong name / 5 GHz only?)";
+    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED: return "WL_CONNECTED";
+    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED (wrong password?)";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED";
+    default: return "unknown";
+  }
+}
+
+static void printWifiFailureHelp(wl_status_t status) {
+  Serial.printf("Wi-Fi status=%d (%s)\n", (int)status, wifiStatusString(status));
+  Serial.println("STA tips: 2.4 GHz hotspot band; correct SSID/password; PC and ESP32 same network;");
+  Serial.println("  iPhone: Settings -> Personal Hotspot -> Maximize Compatibility ON");
+}
+
 static bool startSoftApFallback() {
   WiFi.disconnect(true);
-  WiFi.softAPdisconnect(true);
-  delay(200);
-  WiFi.mode(WIFI_OFF);
-  delay(300);
+  delay(100);
   WiFi.mode(WIFI_AP);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_TX_POWER_AP);
-  WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
-  // Explicit AP IP — some Windows builds fail DHCP on softAP without this
-  if (!WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
-                         IPAddress(255, 255, 255, 0))) {
-    Serial.println("[AP] softAPConfig failed (continuing)");
-  }
-  // hidden=0 → SSID broadcast ON; password ≥8 → WPA2-PSK
-  bool ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CONN);
+  bool ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
   if (!ok) {
     Serial.println("Soft AP start failed");
     return false;
   }
-  delay(1500);  // let beacon stabilize before Windows scan
   wifi_up = true;
   wifi_soft_ap = true;
-  Serial.println("WiFi OK Soft AP started");
-  printWifiStatus();
-  Serial.println("PC: join Wi-Fi STEP_ESP32 (password step1234), then host 192.168.4.1:5000");
+  IPAddress apIp = WiFi.softAPIP();
+  Serial.printf("WiFi OK AP IP=%s  SSID=%s  pass=%s\n",
+                apIp.toString().c_str(), WIFI_AP_SSID, WIFI_AP_PASS);
+  Serial.println("PC: join Wi-Fi STEP_ESP32, then TCP/Open Ephys host 192.168.4.1 port 5000");
   return true;
 }
 
 static void setupWifi() {
   if (!useWifi()) {
     Serial.println("Wi-Fi skipped — USB serial bench mode");
-    Serial.println("PC: host\\run_usb_plugin_bridge.ps1 COMx  (Plugin) or serial_tcp_bridge.py COMx");
-    Serial.println("Open Ephys: 127.0.0.1:5000 — not ESP32 Wi-Fi IP");
     return;
   }
 
-  char ssid[33];
-  char pass[64];
-  strncpy(ssid, WIFI_SSID, sizeof(ssid) - 1);
-  ssid[sizeof(ssid) - 1] = '\0';
-  strncpy(pass, WIFI_PASS, sizeof(pass) - 1);
-  pass[sizeof(pass) - 1] = '\0';
-  trimInPlace(ssid);
-  trimInPlace(pass);
-
   wifi_soft_ap = false;
-  lastStaDisconnectReason = -1;
-  WiFi.persistent(false);  // do not load stale NVS credentials / corrupt join state
-  WiFi.onEvent(onWifiEvent);
-  WiFi.disconnect(true);
-  WiFi.softAPdisconnect(true);
-  delay(200);
-  WiFi.mode(WIFI_OFF);
-  delay(200);
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // iPhone hotspot: avoid ESP light-sleep during join
-  WiFi.setTxPower(WIFI_TX_POWER_STA);
-#if defined(WIFI_AUTH_WPA2_WPA3_PSK)
-  WiFi.setMinSecurity(WIFI_AUTH_WPA2_WPA3_PSK);  // WPA2 + WPA3-only hotspots
-#else
-  WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
-#endif
-  WiFi.setHostname(WIFI_HOSTNAME);
-
-  if (strcmp(ssid, "YOUR_HOTSPOT") == 0) {
-    Serial.println("WARNING: WIFI_SSID still \"YOUR_HOTSPOT\" — edit sketch before upload");
-  }
-
-  Serial.println("Scanning 2.4 GHz networks (3 s, hidden SSIDs included)...");
-  int n = WiFi.scanNetworks(false, true);  // async=false, show_hidden=true
-  bool ssid_seen = false;
-  for (int i = 0; i < n; i++) {
-    if (WiFi.SSID(i) == ssid) {
-      ssid_seen = true;
-      Serial.printf("  target \"%s\" seen RSSI=%d ch=%d\n",
-                    ssid, WiFi.RSSI(i), WiFi.channel(i));
-    }
-  }
-  if (n == 0) {
-    Serial.println("  (no networks — RF/antenna/power issue?)");
-  } else if (!ssid_seen) {
-    Serial.printf("  \"%s\" NOT in scan — typo, 5 GHz-only, or out of range\n", ssid);
-  }
-  WiFi.scanDelete();
-
-  if (strlen(pass) == 0) {
-    Serial.printf("Connecting to open network \"%s\" len=%u (2.4 GHz)\n",
-                  ssid, (unsigned)strlen(ssid));
-    WiFi.begin(ssid);
+  if (strlen(WIFI_PASS) == 0) {
+    Serial.printf("Connecting to open network %s (2.4 GHz)\n", WIFI_SSID);
+    WiFi.begin(WIFI_SSID);
   } else {
-    Serial.printf("Connecting to \"%s\" len=%u (2.4 GHz)\n",
-                  ssid, (unsigned)strlen(ssid));
-    WiFi.begin(ssid, pass);
+    Serial.printf("Connecting to %s (2.4 GHz)\n", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
 
   uint32_t t0 = millis();
-  uint32_t lastStatusLog = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    uint32_t now = millis();
-    wl_status_t st = WiFi.status();
-    Serial.printf(". status=%d (%s)", (int)st, wifiStatusString(st));
-    if (lastStaDisconnectReason >= 0) {
-      Serial.printf(" disc_reason=%d (%s)",
-                    lastStaDisconnectReason,
-                    wifiDisconnectReasonString(lastStaDisconnectReason));
-    }
-    Serial.println();
-    if (now - lastStatusLog >= 10000) {
-      lastStatusLog = now;
-      Serial.printf("  elapsed=%lu ms\n", (unsigned long)(now - t0));
-    }
-    if (now - t0 > (uint32_t)WIFI_STA_TIMEOUT_MS) {
+    Serial.print(".");
+    if (millis() - t0 > (uint32_t)WIFI_STA_TIMEOUT_MS) {
       Serial.println();
       wl_status_t st = WiFi.status();
       printWifiFailureHelp(st);
@@ -615,12 +558,8 @@ static void setupWifi() {
 
   wifi_up = true;
   wifi_soft_ap = false;
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  WiFi STA CONNECTED — use this IP on PC");
-  Serial.println("========================================");
-  printWifiStatus();
-  Serial.println("========================================");
+  Serial.printf("\nWiFi OK IP=%s  RSSI=%d dBm\n",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI());
 }
 
 static void setupEspNow() {
@@ -642,17 +581,12 @@ static void setupEspNow() {
 #endif
 }
 
-static void maybeRepeatStatus() {
+static void maybeRepeatFallbackStatus() {
 #if REPEAT_STATUS_SEC > 0
+  if (icm_ok) return;
   if (millis() - last_status_ms < (uint32_t)REPEAT_STATUS_SEC * 1000UL) return;
   last_status_ms = millis();
-  if (wifi_up) {
-    printWifiStatus();
-    return;
-  }
-  if (!icm_ok) {
-    Serial.println("ICM20948: synthetic fallback — check 3V3, GND, SDA->D4, SCL->D5, addr 0x68/0x69");
-  }
+  Serial.println("ICM20948: synthetic fallback — check 3V3, GND, SDA->D4, SCL->D5, addr 0x68/0x69");
 #endif
 }
 
@@ -696,17 +630,13 @@ void setup() {
 }
 
 void loop() {
-  pollSerialCommands();
-
 #if ENABLE_TCP && !ENABLE_SERIAL_BENCH
   if (wifi_up) {
     if (!client || !client.connected()) {
-      WiFiClient incoming = server.available();
-      if (incoming && incoming.connected()) {
-        client = incoming;
+      client = server.available();
+      if (client) {
         streaming = false;
-        Serial.printf("Client connected from %s\n",
-                      client.remoteIP().toString().c_str());
+        Serial.println("Client connected");
       }
     }
     while (client && client.available()) {
@@ -717,7 +647,8 @@ void loop() {
   }
 #endif
 
-  maybeRepeatStatus();
+  pollSerialCommands();
+  maybeRepeatFallbackStatus();
 
   if (millis() - boot_ms < (uint32_t)BOOT_CSV_DELAY_MS) {
     return;
@@ -725,13 +656,27 @@ void loop() {
 
   static uint32_t last_us = 0;
   uint32_t now = micros();
+  if (last_us == 0) {
+    last_us = now;
+    return;
+  }
   if (now - last_us < (1000000UL / SAMPLE_HZ)) return;
+  float dt_s = (now - last_us) * 1e-6f;
+  if (dt_s > 0.05f) dt_s = 1.0f / (float)SAMPLE_HZ;
   last_us = now;
 
-  readImu(channels);
+  readImu(imu_raw);
+  fusionUpdate(&fusion, imu_raw, dt_s);
   updateDio();
-  channels[6] = packDioCh6();
-  channels[7] = 0;
+  packStreamChannels();
+
+#if ENABLE_SERIAL_BENCH
+  while (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length()) applyFilterCommand(cmd);
+  }
+#endif
 
   sendEspNowSync();
   packAndSendTcp();

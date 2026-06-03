@@ -22,6 +22,9 @@
 2. Plugin AcqBoard connects with checklist in `.planning/PLUGIN-INTEGRATION.md` complete (or documented workaround)
 3. DIO on ch6 visible in acquisition
 4. Ephys Socket + USB bridge path still works as regression (alternate)
+1. Sketch uploads on XIAO ESP32S3
+2. Host receives 100 Hz ch0–10 (11 ch) with REDPITAYA/START; quat on ch7–10
+3. Serial bench mode CSV optional for desk test
 
 **Status:** Sensors + alternate USB path **complete**; **Plugin AcqBoard sign-off in progress**
 

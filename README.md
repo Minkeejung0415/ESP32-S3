@@ -23,6 +23,8 @@ Wiring: ICM **VCC→3V3**, **GND→GND**, **SDA→D4**, **SCL→D5**. Flash **XI
 python host/serial_bench_reader.py COM5
 ```
 
+**Open Ephys + OpenSim (v1.4):** flash with `SERIAL_OUTPUT_BINARY true`, run `host/serial_tcp_bridge.py`, see [docs/esp32-fusion-and-opensim.md](docs/esp32-fusion-and-opensim.md).
+
 ### (B) Open Wi-Fi — TCP, no password
 
 ```cpp
