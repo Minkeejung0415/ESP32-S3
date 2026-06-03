@@ -426,17 +426,30 @@ Matches STEP / Red Pitaya behavior:
 | Step | Action |
 |------|--------|
 | Connect | TCP to node IP, port **5000** |
-| Handshake | Send `REDPITAYA\n` → response lists 8 channels @ 100 Hz |
-| Start | Send `START\n` |
+| Handshake | Send `REDPITAYA\n` → `8 channels; sample_rate=<Hz>; node=esp32s3_arduino; filter=on\|off` |
+| Start | Send `START\n` (Plugin may send `FREQ:<Hz>` first) |
 | Payload | 22-byte little-endian header + **8 × int16** channel-major |
+
+TCP text commands (v2.0, newline-terminated):
+
+| Command | Example | Effect |
+|---------|---------|--------|
+| `REDPITAYA` | `REDPITAYA\n` | Handshake + `OK CHANNELS:8` |
+| `START` | `START\n` | Begin binary stream |
+| `FREQ:` | `FREQ:100\n` | Sample rate **50–200 Hz** (default 100) |
+| `CFG` | `CFG 0 ACC 2\n` | ICM accel full-scale preset 0–3 |
+| `CFG` | `CFG 0 GYR 1\n` | ICM gyro full-scale preset 0–3 |
+| `FILTER` | `FILTER ON\n` / `FILTER OFF\n` | Mahony AHRS on wire (see channel map) |
+| `STATUS` | `STATUS\n` | Wi-Fi / AP status (Serial or TCP) |
 
 Channel map:
 
-| Ch | Content |
-|----|---------|
-| 0–5 | ICM-20948 ax, ay, az, gx, gy, gz (int16; scale on host) |
-| 6 | DIO: bit0 level, bits1–15 edge count |
-| 7 | Reserved (0 in v1; camera v2) |
+| Ch | `FILTER OFF` | `FILTER ON` |
+|----|----------------|-------------|
+| 0–2 | ax, ay, az (int16) | ax, ay, az |
+| 3–5 | gx, gy, gz | qx, qy, qz (Q15 unit quaternion) |
+| 6 | DIO: bit0 level, bits1–15 edge count | same |
+| 7 | 0 | qw (Q15) |
 
 Host test:
 

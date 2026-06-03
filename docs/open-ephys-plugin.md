@@ -61,18 +61,32 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 |------|--------------------------------------------|----------------------------------|
 | TCP port | **5000** (control only) | **5000** (control **and** sample stream) |
 | Data transport | **UDP 55001** (`sendto` per sample) | **Same TCP socket** after `START` |
-| `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `8 channels; sample_rate=100; node=esp32s3_arduino\n` |
-| `START\n` reply | `STARTED BIN:… CSV:…\n` then `SENSORS:0,ICM20948;…\n` | Sets streaming; **no STARTED / SENSORS lines** |
-| Sample rate | Configurable (`FREQ:`), default 100 Hz | Fixed **100 Hz** |
-| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **11** int16 (v1.4: raw/filt IMU + DIO + quat) |
+| `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `8 channels; sample_rate=<Hz>; node=esp32s3_arduino; filter=on\|off\n` |
+| `START\n` reply | `STARTED BIN:… CSV:…\n` then `SENSORS:0,ICM20948;…\n` | `STARTED BIN:…` + `SENSORS:0,ICM20948\n` (USB bridge synthesizes if needed) |
+| Sample rate | Configurable (`FREQ:`), default 100 Hz | **`FREQ:50`–`FREQ:200`** (default 100 Hz) |
+| `CFG` / `FILTER` | Yes | **`CFG 0 ACC|GYR <0-3>`**, **`FILTER ON|OFF`** |
+| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **8** int16 |
 | Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout |
 | Payload | int16 channel-major | int16 channel-major |
 | ch0–5 | IMU (scaled in plugin by sensor preset) | ICM20948 ax, ay, az, gx, gy, gz (raw int16) |
 | ch6 | Part of sensor layout / DIO varies | DIO packed (level + edge count) |
-| ch7 | Reserved / fusion / analog | 0 in v1 |
+| ch7 | Reserved / fusion / analog | **`qw` Q15 when `FILTER ON`**; else 0 |
+| ch3–5 (filter on) | Gyro or quat | **`qx,qy,qz` Q15** (gyro not on wire when filter on) |
 | Host discovery | Hardcoded `rp-f0f85a.local`, `rp-f0cd35.local` | Wi-Fi IP from Serial Monitor |
 
-**What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, 100 Hz target.
+**What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, configurable rate (50–200 Hz).
+
+### ESP32 TCP text commands (v2.0)
+
+| Command | Notes |
+|---------|--------|
+| `REDPITAYA\n` | Returns `sample_rate=<Hz>` and `filter=on\|off` |
+| `FREQ:<Hz>\n` | 50–200 Hz |
+| `CFG 0 ACC <0-3>\n` / `CFG 0 GYR <0-3>\n` | ICM full-scale presets |
+| `FILTER ON\n` / `FILTER OFF\n` | Mahony quaternion on ch3–5, ch7 (Q15) |
+| `START\n` | Binary stream on same TCP socket |
+
+**OpenSim:** enable filter in Plugin, then OpenSim Live — Plugin sends UDP quaternions from ESP32 TCP path when `FILTER ON`.
 
 **What does not match the custom Plugin:** handshake text, STARTED/SENSORS lines, UDP vs TCP streaming, fixed 8-channel map, ESP32 IP vs `.local` Red Pitaya hosts, Plugin scaling expects Red Pitaya sensor slots + quaternion tail.
 

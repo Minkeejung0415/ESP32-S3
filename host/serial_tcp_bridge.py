@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import struct
@@ -336,7 +337,12 @@ async def handle_plugin_handshake(
             source.drain()
             await send_plugin_start_replies(writer)
             await stream_frames(
-                writer, source, first_frame_timeout, verbose, verbose_frames
+                writer,
+                source,
+                first_frame_timeout,
+                verbose,
+                verbose_frames,
+                command_reader=reader,
             )
             return
         logger.debug("Plugin ignored command while waiting for START: %r", line)
@@ -417,18 +423,48 @@ async def handle_client(
         logger.info("TCP client disconnected")
 
 
+async def relay_plugin_commands(
+    reader: asyncio.StreamReader,
+    source: SerialFrameSource,
+) -> None:
+    """Forward FREQ/CFG/FILTER lines from Plugin to USB serial during acquisition."""
+    try:
+        while True:
+            try:
+                line = await asyncio.wait_for(read_line(reader), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            if not line:
+                break
+            upper = line.upper()
+            if upper.startswith("REDPITAYA") or upper.startswith("START"):
+                continue
+            if any(
+                upper.startswith(p)
+                for p in ("FREQ:", "FREQ ", "CFG ", "FILTER", "STOP")
+            ):
+                logger.info("Plugin → serial: %s", line)
+                forward_serial_command(source, line)
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+
+
 async def stream_frames(
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
     first_frame_timeout: float,
     verbose: bool = False,
     verbose_frames: int = 5,
+    command_reader: asyncio.StreamReader | None = None,
 ) -> None:
     """Forward serial frames until the TCP peer closes (Ephys Socket is read-only)."""
     loop = asyncio.get_event_loop()
     first_frame = True
     warned_no_frames = False
     sent = 0
+    relay_task = None
+    if command_reader is not None:
+        relay_task = asyncio.create_task(relay_plugin_commands(command_reader, source))
     try:
         while True:
             timeout = first_frame_timeout if first_frame else 1.0
@@ -469,6 +505,11 @@ async def stream_frames(
             sent += 1
     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
         pass
+    finally:
+        if relay_task is not None:
+            relay_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay_task
     if sent > 1:
         logger.info("stream ended after %d frames", sent)
 

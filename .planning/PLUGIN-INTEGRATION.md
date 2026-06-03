@@ -6,6 +6,8 @@
 
 Detail and gap analysis: [docs/open-ephys-plugin.md](../docs/open-ephys-plugin.md).
 
+**v2.0 (2026-06-03):** Firmware v1.4.0 implements `FREQ:`, `CFG`, `FILTER ON|OFF`, Mahony quaternion on ch3–5/ch7; Plugin `acqboard.ccp` forwards rate/CFG on ESP32 path and sends OpenSim UDP when filter enabled. HIL sign-off still recommended on hardware.
+
 ---
 
 ## Milestone sign-off order (this project)
@@ -35,9 +37,10 @@ Detail and gap analysis: [docs/open-ephys-plugin.md](../docs/open-ephys-plugin.m
 - [x] **Host list** — configurable ESP32 IP (`Node IP` editor field + `ESP32_NODE_HOST` env); `rp-*.local` tried first
 - [x] **`startAcquisition()`** — ESP32 branch skips `STARTED` / `SENSORS:`; fixed 8-ch ICM20948 layout
 - [x] **`run()` transport** — **4a:** ESP32 reads binary from TCP after `START` (mirrors `host/esp32_tcp_client.py`); Red Pitaya stays UDP 55001
-- [x] **Scaling** — ch0–5 ICM int16 (±2g / ±250°/s presets); ch6 DIO bit0; ch7 = 0
+- [x] **Scaling** — ch0–5 ICM int16 with CFG presets; ch6 DIO; ch7 qw when filter on
 - [x] **Optional UI** — `Node IP` field + `retryDetection()` (no separate subclass)
-- [x] **OpenSim scripts** — `OPENSIM_ESP32_8CH=1` maps single `torso_imu` (quat path N/A on ESP32 firmware)
+- [x] **OpenSim** — ESP32 TCP `run()` calls `sendOpenSimQuaternionPacket()` when **Filter ON** (Q15 on ch3–5, ch7)
+- [x] **v2 commands** — `FREQ:` on start + `updateSampleFrequency`; handshake parses `sample_rate=`
 
 ---
 
