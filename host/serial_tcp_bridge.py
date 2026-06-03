@@ -51,6 +51,37 @@ DEFAULT_FIRST_FRAME_TIMEOUT = 15.0
 HANDSHAKE_PEEK_TIMEOUT = 0.3
 PLUGIN_CMD_TIMEOUT = 120.0
 
+# Last FREQ forwarded to firmware (USB path has no REDPITAYA text reply on serial).
+_plugin_sample_rate_hz = 100
+
+_RELAY_PREFIXES = ("FREQ:", "FREQ ", "CFG ", "FILTER", "STOP")
+
+
+def _should_relay_plugin_command(line: str) -> bool:
+    upper = line.upper()
+    return any(upper.startswith(p) for p in _RELAY_PREFIXES)
+
+
+def _parse_freq_hz(line: str) -> int | None:
+    upper = line.upper()
+    if upper.startswith("FREQ:"):
+        try:
+            return int(line.split(":", 1)[1].strip())
+        except ValueError:
+            return None
+    if upper.startswith("FREQ "):
+        try:
+            return int(line.split(None, 1)[1].strip())
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _note_forwarded_plugin_command(line: str) -> None:
+    global _plugin_sample_rate_hz
+    hz = _parse_freq_hz(line)
+    if hz is not None and 1 <= hz <= 2000:
+        _plugin_sample_rate_hz = hz
 
 
 def open_serial(port: str, baud: int):
@@ -282,11 +313,12 @@ def _first_command_line(peek: bytes) -> str:
 
 
 async def send_plugin_handshake_replies(
-    writer: asyncio.StreamWriter, num_ch: int
+    writer: asyncio.StreamWriter, num_ch: int, sample_rate_hz: int | None = None
 ) -> None:
     """Match esp32_tcp_client / step_node.ino plus Red Pitaya lines for older Plugin builds."""
+    sr = sample_rate_hz if sample_rate_hz is not None else _plugin_sample_rate_hz
     writer.write(
-        f"{num_ch} channels; sample_rate=100; node=esp32s3_arduino\n".encode()
+        f"{num_ch} channels; sample_rate={sr}; node=esp32s3_arduino\n".encode()
     )
     writer.write(f"OK CHANNELS:{num_ch}\n".encode())
     await writer.drain()
@@ -345,6 +377,11 @@ async def handle_plugin_handshake(
                 command_reader=reader,
             )
             return
+        if _should_relay_plugin_command(line):
+            logger.info("Plugin → serial (pre-START): %s", line)
+            forward_serial_command(source, line)
+            _note_forwarded_plugin_command(line)
+            continue
         logger.debug("Plugin ignored command while waiting for START: %r", line)
 
 
@@ -439,12 +476,10 @@ async def relay_plugin_commands(
             upper = line.upper()
             if upper.startswith("REDPITAYA") or upper.startswith("START"):
                 continue
-            if any(
-                upper.startswith(p)
-                for p in ("FREQ:", "FREQ ", "CFG ", "FILTER", "STOP")
-            ):
+            if _should_relay_plugin_command(line):
                 logger.info("Plugin → serial: %s", line)
                 forward_serial_command(source, line)
+                _note_forwarded_plugin_command(line)
     except (asyncio.CancelledError, ConnectionResetError):
         pass
 
