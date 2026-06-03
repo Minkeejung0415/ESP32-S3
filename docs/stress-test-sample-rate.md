@@ -18,6 +18,10 @@ Yes — **checking the CSV (or bench log) for duplicated `seq` or identical cons
 3. Record **≥ 10 s** per step at each rate.
 4. Increase until you see duplicates or gaps, then back off ~20%.
 
+### Automated sweep (`host/stress_test_serial.py`)
+
+Pass per rate: no `seq` gaps/dups, enough rows, and **`mean_hz` within 95%–115%** of requested Hz (e.g. `FREQ:1500` @ 1320 Hz → **FAIL**). Recommended cap = **80%** of the highest passing rate.
+
 ### USB theoretical note
 
 Serial bench @ **115200 baud**: raw 11×int16 + 22-byte header ≈ 44 bytes/sample → ~260 Hz theoretical if the loop keeps up. Real max is lower (USB task, `FILTER ON` VQF cost, other USB traffic). Wi-Fi TCP often allows higher sustained rates than USB for the same sketch.

@@ -220,12 +220,14 @@ def capture_text_csv(ser: serial.Serial, seconds: float, out_path: Path) -> int:
 
 
 def capture_binary_to_csv(ser: serial.Serial, seconds: float, out_path: Path) -> tuple[int, float | None]:
-    """Parse Open Ephys-style binary frames; write seq,host_us for analyzer."""
+    """Parse Open Ephys binary frames; write seq,time_s (hw_us when offset!=0 else host)."""
     end = time.monotonic() + seconds
     pending = bytearray()
     rows: list[str] = []
-    t0: float | None = None
-    last_us: float | None = None
+    host_t0: float | None = None
+    last_host_s: float | None = None
+    last_hw_us32: int | None = None
+    hw_t0_us: int | None = None
     dts: list[float] = []
 
     while time.monotonic() < end:
@@ -245,23 +247,31 @@ def capture_binary_to_csv(ser: serial.Serial, seconds: float, out_path: Path) ->
                 continue
             hdr = pending[:HEADER_SIZE]
             try:
-                num_bytes = struct.unpack(HEADER_FMT, hdr)[1]
+                offset, num_bytes, *_rest = struct.unpack(HEADER_FMT, hdr)
             except struct.error:
                 del pending[0:1]
                 continue
             if num_bytes != PAYLOAD_SIZE:
                 del pending[0:1]
                 continue
-            frame = pending[:FRAME_SIZE]
             del pending[:FRAME_SIZE]
-            now = time.perf_counter()
-            if t0 is None:
-                t0 = now
-            t_sec = now - t0
-            if last_us is not None:
-                dts.append(t_sec - last_us)
-            last_us = t_sec
             seq = len(rows)
+            if offset != 0:
+                hw_us32 = offset & 0xFFFFFFFF
+                if hw_t0_us is None:
+                    hw_t0_us = hw_us32
+                if last_hw_us32 is not None:
+                    dts.append(((hw_us32 - last_hw_us32) & 0xFFFFFFFF) / 1e6)
+                last_hw_us32 = hw_us32
+                t_sec = (hw_us32 - hw_t0_us) / 1e6
+            else:
+                now = time.perf_counter()
+                if host_t0 is None:
+                    host_t0 = now
+                t_sec = now - host_t0
+                if last_host_s is not None:
+                    dts.append(t_sec - last_host_s)
+                last_host_s = t_sec
             rows.append(f"{seq},{t_sec:.6f}")
 
     out_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
@@ -333,7 +343,7 @@ def test_one_rate(
             gap += max(0, int(hz * capture_s) - rows)
 
     expected = int(hz * capture_s * 0.85)
-    rate_ok = mean_hz is not None and (0.85 * hz <= mean_hz <= 1.15 * hz)
+    rate_ok = mean_hz is not None and (0.95 * hz <= mean_hz <= 1.15 * hz)
     passed = dup == 0 and gap == 0 and rows >= expected and rate_ok  # host USB bursts inflate gap_time
     note = ""
     if binary_mode is None:
@@ -468,8 +478,11 @@ def main() -> int:
         lines.extend(
             [
                 "",
+                "Pass rule: `mean_hz` must be within **95%–115%** of requested Hz "
+                "(e.g. 1500 Hz @ 1320 Hz → **FAIL**; USB/loop ceiling ~1.3 kHz on this path).",
+                "",
                 f"Highest passing Hz: **{last_good}**",
-                f"Recommended cap (80%): **{recommended} Hz**",
+                f"Recommended cap (80% of highest pass): **{recommended} Hz**",
             ]
         )
         summary.write_text("\n".join(lines) + "\n", encoding="utf-8")

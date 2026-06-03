@@ -2,7 +2,7 @@
 
 This document answers whether [Minkeejung0415/Plugin](https://github.com/Minkeejung0415/Plugin) must be edited for the ESP32-S3 STEP node, and how that relates to the built-in **Ephys Socket** plugin.
 
-Firmware reference: `arduino/step_node/step_node.ino` v1.6.0 · Host test: `host/esp32_tcp_client.py` · Checklist: `.planning/PLUGIN-INTEGRATION.md` · Rate stress test: [stress-test-sample-rate.md](stress-test-sample-rate.md)
+Firmware reference: `arduino/step_node/step_node.ino` v1.7.0 · Host test: `host/esp32_tcp_client.py` · Checklist: `.planning/PLUGIN-INTEGRATION.md` · Rate stress test: [stress-test-sample-rate.md](stress-test-sample-rate.md)
 
 ---
 
@@ -66,7 +66,7 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | Sample rate | Configurable (`FREQ:`), default 100 Hz | **`FREQ:<Hz>`** any integer **≥ 1** (default 100 Hz; no firmware/plugin cap — user finds true min/max by testing) |
 | `CFG` / `FILTER` | Yes | **`CFG 0 ACC|GYR <0-3>`**, **`FILTER ON|OFF`** |
 | Channels | Dynamic (sensors × raw + quat + analog) | Fixed **11** int16 (firmware ≥1.5.0) |
-| Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout |
+| Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout (see [Binary frame header](#binary-frame-header-v170)) |
 | Payload | int16 channel-major | int16 channel-major |
 | Raw IMU | Always in first `num_raw` slots per sensor (e.g. MPU6050: ch0–2 acc, ch3–5 gyr) | **Always** ch0–2 acc, ch3–5 gyr (never replaced by quat) |
 | Filter / quat | Next 4 slots after raw (`num_raw`…`num_raw+3`), Q15; **0 when `FILTER OFF`** | ch7–10 qw,qx,qy,qz Q15; **0 when `FILTER OFF`** |
@@ -91,6 +91,38 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 **Red Pitaya reference (one MPU6050-class sensor):** 6 raw + 4 quat = 10 stream slots (+ analog tail). ESP32 uses 6 raw + DIO + 4 quat = 11.
 
 **What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, configurable rate via `FREQ:` (Hz ≥ 1 only).
+
+### Binary frame header (v1.7.0)
+
+**`HEADER_SIZE` = 22 bytes** — unchanged from Ephys Socket / Red Pitaya layout (`struct "<iiHiii"`). No extra bytes; backward compatible parsers that ignore unknown fields still work.
+
+| Offset (bytes) | Field | Type | ESP32-S3 (≥1.7.0) | Legacy (≤1.6.0) |
+|----------------|-------|------|-------------------|-----------------|
+| 0 | `offset` | int32 LE | **Hardware time:** low 32 bits of `esp_timer_get_time()` µs since boot (monotonic per board; wraps ~71 min) | Always `0` |
+| 4 | `num_bytes` | int32 LE | `NUM_CHANNELS × 2` (22 for 11 ch) | Same |
+| 8 | `bit_depth` | uint16 LE | `3` (Open Ephys S16 enum) | Same |
+| 10 | `element_size` | int32 LE | `2` (int16) | Same |
+| 14 | `num_channels` | int32 LE | `11` | Same |
+| 18 | `samples_per_channel` | int32 LE | `1` | Same |
+| 22+ | payload | int16[] | Channel-major samples | Same |
+
+**Clock choice:** `esp_timer_get_time()` (µs since boot, same domain as ESP-NOW `SyncPacket.time_us`). Not wall-clock / NTP — Wi-Fi time sync is a separate layer.
+
+**Plugin / host:** When `offset != 0`, AcqBoard ESP32 path and `host/stress_test_serial.py` use **inter-frame Δoffset** (uint32 wrap-safe) for rate and timeline spacing. When `offset == 0`, fall back to host arrival time (USB bridge, old firmware).
+
+### Multi-ESP32 timestamp sync (v1 minimal)
+
+Each slave stamps frames with **its own** monotonic µs since boot. Slaves do **not** share an absolute epoch unless you add one.
+
+| Approach | When to use |
+|----------|-------------|
+| **Per-frame `offset` (v1.7.0)** | Single node or post-hoc merge; compare Δt within one COM/TCP stream |
+| **Shared START** | Master (or host) sends `START\n` / GPIO pulse to all nodes at once; align first frame after START |
+| **ESP-NOW `SyncPacket`** | Master broadcasts `{seq, time_us}` (`esp_timer_get_time()`); slaves already use same struct when `ENABLE_ESPNOW` |
+| **Host merge** | Record `host_wall` at START; map each slave’s `offset` + USB latency; or use Open Ephys event channel on DIO |
+| **UTC / NTP** | Future: optional SNTP on STA — not required for sample pacing |
+
+**Recommendation:** For multiple ESP32-S3 nodes, designate one **master** that issues START (or a DIO sync line into ch6 on all boards). Log each stream separately; align offline using first post-START `offset` delta or ESP-NOW sync packets. Plugin v1 uses hardware `offset` only for **one** TCP stream at a time.
 
 ### ESP32 TCP text commands (v2.0)
 

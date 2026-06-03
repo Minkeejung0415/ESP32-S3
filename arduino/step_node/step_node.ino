@@ -50,7 +50,7 @@ extern "C" {
 #include "vqf.h"
 }
 
-#define FIRMWARE_VERSION "1.6.0"
+#define FIRMWARE_VERSION "1.7.0"
 #define WIFI_HOSTNAME "step-esp32"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
@@ -476,8 +476,12 @@ static void readImu(int16_t out[6]) {
   out[3] = out[4] = out[5] = 0;
 }
 
+// Open Ephys header offset field (int32 LE): low 32 bits of esp_timer_get_time() µs since boot.
+// offset==0 = legacy frames (host/Plugin use arrival-time pacing). Same clock on every slave;
+// cross-board alignment needs START pulse or host merge — see docs/open-ephys-plugin.md.
 static void fillOeHeader(OeHeader *hdr) {
-  hdr->offset = 0;
+  const uint32_t hw_us = (uint32_t)esp_timer_get_time();
+  hdr->offset = (int32_t)hw_us;
   hdr->num_channels = NUM_CHANNELS;
   hdr->samples_per_channel = 1;
   hdr->element_size = 2;
