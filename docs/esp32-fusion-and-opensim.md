@@ -6,12 +6,18 @@ Firmware **v1.4.0** runs **Madgwick AHRS on the ESP32** before samples are strea
 
 | Ch | Filter OFF | Filter ON |
 |----|------------|-----------|
-| 0–2 | Raw accel ax, ay, az | Gravity-removed linear accel (g × 16384) |
+| 0–2 | Gravity-removed linear accel (default, `FILTER_PERMANENT`) | Same (always on) |
 | 3–5 | Raw gyro gx, gy, gz | Same |
 | 6 | DIO (level + edge count) | Same |
 | 7–10 | Quaternion qw, qx, qy, qz (int16 ÷ 32767) | Same |
 
 Gyro and quaternion channels are unchanged when filter is on; only **ch0–2** switch to filtered linear acceleration (Red Pitaya–style “filter button on ch0” behavior).
+
+## Filter (permanent by default)
+
+`FILTER_PERMANENT` is **true** in `step_node.ino`: ch0–2 are always gravity-removed linear acceleration. You do **not** need to change the Open Ephys Plugin or send `FILTER` commands.
+
+To stream raw accel on ch0–2 again (debug), set `#define FILTER_PERMANENT false` and optionally use `FILTER 0` / `FILTER 1` over serial or TCP.
 
 ## TCP / serial commands
 
@@ -19,10 +25,7 @@ Gyro and quaternion channels are unchanged when filter is on; only **ch0–2** s
 |---------|--------|
 | `REDPITAYA` | `OK CHANNELS:11` + info line |
 | `START` | Begin streaming; replies `STARTED` |
-| `FILTER` or `FILTER 1` | Enable filter on ch0–2 |
-| `FILTER 0` | Raw accel on ch0–2 |
-
-USB bench: send `FILTER 1` on the same serial port (115200) while streaming.
+| `FILTER` | Optional override if `FILTER_PERMANENT` is false |
 
 ## USB → PC → Open Ephys (your usual path)
 

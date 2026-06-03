@@ -69,6 +69,9 @@
 #define CH_QUAT_Y 9
 #define CH_QUAT_Z 10
 
+// Filter always on: ch0-2 = gravity-removed accel (no Plugin changes).
+#define FILTER_PERMANENT true
+
 #define PIN_I2C_SDA 5   // XIAO D4 / GPIO5
 #define PIN_I2C_SCL 6   // XIAO D5 / GPIO6
 #define PIN_DIO 1       // XIAO D0 / GPIO1 — change via #define if wired elsewhere
@@ -108,7 +111,7 @@ uint32_t seq = 0;
 int16_t channels[NUM_CHANNELS];
 int16_t imu_raw[6];
 ImuFusion fusion;
-bool filter_enabled = false;
+bool filter_enabled = FILTER_PERMANENT;
 bool icm_ok = false;
 uint8_t icm_addr = ICM20948_ADDR;
 uint32_t boot_ms = 0;
@@ -363,7 +366,7 @@ static void packAndSendTcp() {
 static void sendSerialBench() {
 #if ENABLE_SERIAL_BENCH
   if (!csv_banner_sent) {
-    Serial.printf("# STEP v%s icm=%s ch0-5=imu ch6=dio ch7-10=quat FILTER toggles ch0-2\n",
+    Serial.printf("# STEP v%s icm=%s ch0-2=filtered accel ch3-5=gyro ch6=dio ch7-10=quat\n",
                   FIRMWARE_VERSION, icm_ok ? "OK" : "FALLBACK");
     csv_banner_sent = true;
   }
