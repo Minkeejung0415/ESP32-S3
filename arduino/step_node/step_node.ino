@@ -46,7 +46,11 @@
 #include <math.h>
 #include <string.h>
 
-#define FIRMWARE_VERSION "1.5.0"
+extern "C" {
+#include "vqf.h"
+}
+
+#define FIRMWARE_VERSION "1.6.0"
 #define WIFI_HOSTNAME "step-esp32"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
@@ -146,14 +150,12 @@ static bool g_filter_on = false;
 
 static const float kAccLsbPerG[4] = {16384.0f, 8192.0f, 4096.0f, 2048.0f};
 static const float kGyrLsbPerDps[4] = {131.072f, 65.536f, 32.768f, 16.384f};
+static const float kStdGravityMps2 = 9.80665f;
+static const float kMagUnitsPerLsb = 0.15f;  // AK09916, matches Plugin sensor_fusion ICM20948
+static const float kMagRateHz = 100.0f;
 
-static float ahrs_qw = 1.0f;
-static float ahrs_qx = 0.0f;
-static float ahrs_qy = 0.0f;
-static float ahrs_qz = 0.0f;
-static float ahrs_ix = 0.0f;
-static float ahrs_iy = 0.0f;
-static float ahrs_iz = 0.0f;
+static VQF g_vqf;
+static bool g_vqf_inited = false;
 
 static bool useWifi() { return ENABLE_TCP || ENABLE_ESPNOW; }
 
@@ -176,55 +178,60 @@ static void icmApplyRangePresets() {
 #endif
 }
 
-static void mahonyAhrsUpdate(float gx, float gy, float gz, float ax, float ay, float az,
-                             float dt) {
-  const float kKp = 2.0f;
-  const float kKi = 0.005f;
-  float norm = sqrtf(ax * ax + ay * ay + az * az);
-  if (norm < 1.0e-6f) return;
-  ax /= norm;
-  ay /= norm;
-  az /= norm;
-
-  float q0 = ahrs_qw, q1 = ahrs_qx, q2 = ahrs_qy, q3 = ahrs_qz;
-  float vb_x = 2.0f * (q1 * q3 - q0 * q2);
-  float vb_y = 2.0f * (q0 * q1 + q2 * q3);
-  float vb_z = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
-
-  float ex = (ay * vb_z - az * vb_y);
-  float ey = (az * vb_x - ax * vb_z);
-  float ez = (ax * vb_y - ay * vb_x);
-
-  ahrs_ix += kKi * ex * dt;
-  ahrs_iy += kKi * ey * dt;
-  ahrs_iz += kKi * ez * dt;
-  gx += kKp * ex + ahrs_ix;
-  gy += kKp * ey + ahrs_iy;
-  gz += kKp * ez + ahrs_iz;
-
-  gx *= (0.5f * dt);
-  gy *= (0.5f * dt);
-  gz *= (0.5f * dt);
-
-  q0 += (-q1 * gx - q2 * gy - q3 * gz);
-  q1 += (q0 * gx + q2 * gz - q3 * gy);
-  q2 += (q0 * gy - q1 * gz + q3 * gx);
-  q3 += (q0 * gz + q1 * gy - q2 * gx);
-
-  norm = sqrtf(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
-  if (norm < 1.0e-6f) return;
-  const float inv = 1.0f / norm;
-  ahrs_qw = q0 * inv;
-  ahrs_qx = q1 * inv;
-  ahrs_qy = q2 * inv;
-  ahrs_qz = q3 * inv;
+static void vqfReinitFilter() {
+  const float hz = (float)g_sample_hz;
+  if (hz < 1.0f) return;
+  const float imu_ts = 1.0f / hz;
+  const float mag_ts = 1.0f / kMagRateHz;
+  vqf_init(&g_vqf, imu_ts, imu_ts, mag_ts);
+  g_vqf_inited = true;
 }
 
-static void packChannelsFromImu(const int16_t imu[6]) {
-  const float acc_scale = kAccLsbPerG[g_acc_preset & 3u];
-  const float gyr_scale = kGyrLsbPerDps[g_gyr_preset & 3u];
-  const float dt = 1.0f / (float)g_sample_hz;
+static void imuRawToVqfPhysical(const int16_t imu[6], vqf_real_t acc[3], vqf_real_t gyr[3]) {
+  const float acc_mps2_per_lsb =
+      kStdGravityMps2 / kAccLsbPerG[g_acc_preset & 3u];
+  const float gyr_rads_per_lsb =
+      (float)(M_PI / 180.0) / kGyrLsbPerDps[g_gyr_preset & 3u];
+  acc[0] = (vqf_real_t)((float)imu[0] * acc_mps2_per_lsb);
+  acc[1] = (vqf_real_t)((float)imu[1] * acc_mps2_per_lsb);
+  acc[2] = (vqf_real_t)((float)imu[2] * acc_mps2_per_lsb);
+  gyr[0] = (vqf_real_t)((float)imu[3] * gyr_rads_per_lsb);
+  gyr[1] = (vqf_real_t)((float)imu[4] * gyr_rads_per_lsb);
+  gyr[2] = (vqf_real_t)((float)imu[5] * gyr_rads_per_lsb);
+}
 
+static void vqfUpdateFromImu(const int16_t imu[6], const int16_t *mag_or_null,
+                             bool mag_fresh) {
+  if (!g_vqf_inited)
+    vqfReinitFilter();
+
+  vqf_real_t acc[3], gyr[3];
+  imuRawToVqfPhysical(imu, acc, gyr);
+  vqf_update(&g_vqf, gyr, acc);
+
+  if (mag_or_null != nullptr && mag_fresh) {
+    vqf_real_t mag[3];
+    mag[0] = (vqf_real_t)((float)mag_or_null[0] * kMagUnitsPerLsb);
+    mag[1] = (vqf_real_t)((float)mag_or_null[1] * kMagUnitsPerLsb);
+    mag[2] = (vqf_real_t)((float)mag_or_null[2] * kMagUnitsPerLsb);
+    vqf_update_mag(&g_vqf, mag);
+  }
+}
+
+static void vqfReadQuatQ15(int16_t out[4], bool use_9d) {
+  vqf_real_t quat[4];
+  if (use_9d)
+    vqf_get_quat_9d(&g_vqf, quat);
+  else
+    vqf_get_quat_6d(&g_vqf, quat);
+  out[0] = floatToQ15((float)quat[0]);
+  out[1] = floatToQ15((float)quat[1]);
+  out[2] = floatToQ15((float)quat[2]);
+  out[3] = floatToQ15((float)quat[3]);
+}
+
+static void packChannelsFromImu(const int16_t imu[6], const int16_t *mag_or_null,
+                                bool mag_fresh) {
   channels[0] = imu[0];
   channels[1] = imu[1];
   channels[2] = imu[2];
@@ -240,18 +247,8 @@ static void packChannelsFromImu(const int16_t imu[6]) {
   if (!g_filter_on)
     return;
 
-  const float ax = (float)imu[0] / acc_scale;
-  const float ay = (float)imu[1] / acc_scale;
-  const float az = (float)imu[2] / acc_scale;
-  const float gx = ((float)imu[3] / gyr_scale) * (float)(M_PI / 180.0);
-  const float gy = ((float)imu[4] / gyr_scale) * (float)(M_PI / 180.0);
-  const float gz = ((float)imu[5] / gyr_scale) * (float)(M_PI / 180.0);
-  mahonyAhrsUpdate(gx, gy, gz, ax, ay, az, dt);
-
-  channels[7] = floatToQ15(ahrs_qw);
-  channels[8] = floatToQ15(ahrs_qx);
-  channels[9] = floatToQ15(ahrs_qy);
-  channels[10] = floatToQ15(ahrs_qz);
+  vqfUpdateFromImu(imu, mag_or_null, mag_fresh);
+  vqfReadQuatQ15(&channels[7], mag_or_null != nullptr && mag_fresh);
 }
 
 static int parseFreqHz(const String &line) {
@@ -294,6 +291,8 @@ static bool handleCfgLine(const String &line) {
     int hz = preset;
     g_sample_hz = (uint16_t)hz;
     g_sample_last_us = 0;
+    if (g_filter_on)
+      vqfReinitFilter();
     char buf[48];
     snprintf(buf, sizeof(buf), "OK FREQ:%d\n", hz);
     replyToHost(buf);
@@ -563,6 +562,8 @@ static void handleLine(const String &line) {
     } else {
       g_sample_hz = (uint16_t)hz;
       g_sample_last_us = 0;
+      if (g_filter_on)
+        vqfReinitFilter();
       char ok[32];
       snprintf(ok, sizeof(ok), "OK FREQ:%d\n", hz);
       replyToHost(ok);
@@ -572,9 +573,7 @@ static void handleLine(const String &line) {
     }
   } else if (line.startsWith("FILTER ON")) {
     g_filter_on = true;
-    ahrs_qw = 1.0f;
-    ahrs_qx = ahrs_qy = ahrs_qz = 0.0f;
-    ahrs_ix = ahrs_iy = ahrs_iz = 0.0f;
+    vqfReinitFilter();
     replyToHost("OK FILTER ON\n");
   } else if (line.startsWith("FILTER OFF")) {
     g_filter_on = false;
@@ -934,7 +933,7 @@ void loop() {
   int16_t imu[6];
   readImu(imu);
   updateDio();
-  packChannelsFromImu(imu);
+  packChannelsFromImu(imu, nullptr, false);
 
   sendEspNowSync();
   packAndSendTcp();

@@ -439,7 +439,7 @@ TCP text commands (v2.0, newline-terminated):
 | `FREQ:` | `FREQ:100\n` | Sample rate **50–200 Hz** (default 100) |
 | `CFG` | `CFG 0 ACC 2\n` | ICM accel full-scale preset 0–3 |
 | `CFG` | `CFG 0 GYR 1\n` | ICM gyro full-scale preset 0–3 |
-| `FILTER` | `FILTER ON\n` / `FILTER OFF\n` | Mahony AHRS on wire (see channel map) |
+| `FILTER` | `FILTER ON\n` / `FILTER OFF\n` | VQF on ch7–10 when ON (see channel map) |
 | `STATUS` | `STATUS\n` | Wi-Fi / AP status (Serial or TCP) |
 
 Channel map:

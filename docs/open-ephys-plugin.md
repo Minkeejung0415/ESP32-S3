@@ -2,7 +2,7 @@
 
 This document answers whether [Minkeejung0415/Plugin](https://github.com/Minkeejung0415/Plugin) must be edited for the ESP32-S3 STEP node, and how that relates to the built-in **Ephys Socket** plugin.
 
-Firmware reference: `arduino/step_node/step_node.ino` v1.3.0 · Host test: `host/esp32_tcp_client.py` · Checklist: `.planning/PLUGIN-INTEGRATION.md`
+Firmware reference: `arduino/step_node/step_node.ino` v1.6.0 · Host test: `host/esp32_tcp_client.py` · Checklist: `.planning/PLUGIN-INTEGRATION.md` · Rate stress test: [stress-test-sample-rate.md](stress-test-sample-rate.md)
 
 ---
 
@@ -80,11 +80,11 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | 0–2 | `ax`, `ay`, `az` | Accel raw (ICM int16) | IMU | IMU |
 | 3–5 | `gx`, `gy`, `gz` | Gyro raw (ICM int16) | IMU | IMU |
 | 6 | `dio` | DIO (bit0 level, bits1–15 edge count) | DIO | DIO |
-| 7–10 | `qw`, `qx`, `qy`, `qz` | Filter quaternion Q15 | **0** (flat) | Mahony AHRS |
+| 7–10 | `qw`, `qx`, `qy`, `qz` | Filter quaternion Q15 | **0** (flat) | VQF (Plugin `vqf.c`) |
 
 **Flat channels in the GUI:** With **Filter OFF**, ch7–10 are intentionally zero. With **Filter ON**, quat channels are Q15 (±32767) while accel/gyro are raw LSB — auto-scaled traces can make quats look “flat” if the Y axis is tuned for ~16k accel counts. Toggle filter or rescale the display.
 
-**OpenSim (one IMU):** Plugin sends UDP v2 with `n_sensors=1` only. Enable **Filter ON** (firmware Mahony on ch7–10, or plugin Madgwick fallback on 6–8 ch packets). Do not use the pre-1.5.0 layout that treated gyro slots as quaternion components.
+**OpenSim (one IMU):** Plugin sends UDP v2 with `n_sensors=1` only. Enable **Filter ON** (firmware VQF on ch7–10, or plugin Madgwick fallback on 6–8 ch packets). Do not use the pre-1.5.0 layout that treated gyro slots as quaternion components.
 
 **Before v1.5.0 (8 ch, deprecated):** ch3–5 and ch7 held gyro **or** quat (mutually exclusive on wire). Plugin ≥ current still decodes legacy 8-ch packets if `channelsInPacket < 11`.
 
@@ -99,7 +99,7 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | `REDPITAYA\n` | Returns `sample_rate=<Hz>` and `filter=on\|off` |
 | `FREQ:<Hz>\n` | Any Hz **≥ 1** (invalid ≤ 0 rejected) |
 | `CFG 0 ACC <0-3>\n` / `CFG 0 GYR <0-3>\n` | ICM full-scale presets |
-| `FILTER ON\n` / `FILTER OFF\n` | Mahony quaternion on ch7–10 (Q15); ch0–5 always raw |
+| `FILTER ON\n` / `FILTER OFF\n` | VQF quaternion on ch7–10 (Q15); ch0–5 always raw |
 | `START\n` | Binary stream on same TCP socket |
 
 **OpenSim:** Plugin reads filter slots ch7–10 (Q15), same convention as Red Pitaya quat tail — flat zeros when `FILTER OFF`, live quat when `FILTER ON`.
@@ -112,6 +112,8 @@ Firmware, USB bridge, and Plugin accept any **Hz ≥ 1** via `FREQ:<Hz>` / edito
 
 - **Too high:** duplicated samples (same seq/value repeated) — loop cannot keep up or USB/TCP cannot carry the stream.
 - **Too low / USB-limited:** gaps or lost frames (sequence jumps, uneven timeline).
+
+Full procedure: **[stress-test-sample-rate.md](stress-test-sample-rate.md)** · analyzer: `python host/analyze_sample_rate.py your_log.csv`
 
 ---
 
@@ -213,5 +215,6 @@ Use the **fixed 8-channel ESP32 map** (ch0–5 ICM int16, ch6 DIO bit0, ch7 = 0)
 - [.planning/PLUGIN-INTEGRATION.md](../.planning/PLUGIN-INTEGRATION.md) — operator checklist, presets, verification commands
 - [.planning/ROADMAP.md](../.planning/ROADMAP.md) — phase order
 - [arduino-ide-guide.md](arduino-ide-guide.md) — TCP / serial bench setup
+- [stress-test-sample-rate.md](stress-test-sample-rate.md) — find max sustainable `FREQ:` / detect duplicates & gaps
 - [wiring-diagram.md](wiring-diagram.md) — ICM dual-silk wiring
 - Plugin change log: `docs/2026-04-27-change-documentation.md` in Plugin repo (UDP 55001, SENSORS line)
