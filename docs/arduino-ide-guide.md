@@ -22,8 +22,8 @@ Board on **USB to PC only**. Firmware **v1.3.4** (`FIRMWARE_VERSION` in sketch).
    pip install pyserial
    .\host\run_usb_plugin_bridge.ps1 COM5
    ```
-   Or Ephys Socket only: `python host\serial_tcp_bridge.py COM5` (no `--plugin`).
-7. **Open Ephys** — **`127.0.0.1:5000`** (not the ESP32 Wi-Fi IP). **Sample rate 100 Hz**, **8 channels**.
+   Or: `python host\serial_tcp_bridge.py COM5 --plugin` (Acq Board). For **11-channel** fusion firmware: `set ESP32_NUM_CHANNELS=11` before starting the bridge.
+7. **Open Ephys** — **`127.0.0.1:5000`** (not the ESP32 Wi-Fi IP). **Sample rate 100 Hz**; match channel count to firmware (8 or 11).
    - **Ephys Socket** (built-in): bridge **without** `--plugin`.
    - **Plugin Acq Board** (Minkeejung0415/Plugin, custom GUI): **`run_usb_plugin_bridge.ps1`**, Node IP **`127.0.0.1`** — Wi-Fi not required.
 
@@ -484,7 +484,7 @@ Same architecture in `firmware/` for teams using **idf.py** (camera hooks, FreeR
 | ICM not found | Check wiring, I2C address 0x68/0x69, run with synthetic fallback |
 | No TCP client | Firewall; `ping` node IP; after timeout use Soft AP `192.168.4.1`; run `host/esp32_tcp_client.py` |
 | Wi-Fi connect timeout | See [Hotspot troubleshooting](#hotspot-troubleshooting-connect-timeout); join `STEP_ESP32` / `step1234` on PC |
-| USB bench empty / bridge "no serial frames" | Set **`USB_OPEN_EPHYS_MODE true`**, re-flash; wait **>5 s** after boot; verify with `serial_bench_reader.py --binary`; close Serial Monitor |
+| USB bench empty / bridge `no serial frames yet` | Set **`USB_OPEN_EPHYS_MODE true`**, re-flash; wait **>5 s** after boot; verify with `serial_bench_reader.py --binary`; close Serial Monitor; use latest `serial_tcp_bridge.py` (accepts firmware `bit_depth=16`; `--plugin` for Acq Board) |
 | ESP-NOW no sync | Same RF channel; Wi-Fi must be started before `esp_now_init` |
 | SD fail | Sense CS pin, FAT32 card, `ENABLE_SD` |
 

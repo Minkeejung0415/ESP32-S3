@@ -38,15 +38,14 @@ logger = logging.getLogger(__name__)
 
 HEADER = struct.Struct("<iiHiii")
 HEADER_SIZE = HEADER.size
-DEFAULT_NUM_CHANNELS = int(os.environ.get("ESP32_NUM_CHANNELS", "11"))
-FRAME_PAYLOAD = DEFAULT_NUM_CHANNELS * 2
+FRAME_PAYLOAD = 8 * 2  # legacy 8 x int16
 FRAME_SIZE = HEADER_SIZE + FRAME_PAYLOAD
-HANDSHAKE_REPLY_ESP32 = b"11 channels; sample_rate=100; fusion=madgwick; node=esp32s3_arduino\n"
-HANDSHAKE_REPLY_OK_CHANNELS = b"OK CHANNELS:11\n"
 STARTED_REPLY = b"STARTED BIN:step_usb_bridge\n"
 SENSORS_REPLY = b"SENSORS:0,ICM20948\n"
 # Open Ephys Ephys Socket: OpenCV Mat depth enum (S16), not literal 16 bits.
 OE_BIT_DEPTH_S16 = 3
+FIRMWARE_BIT_DEPTH = 16  # step_node fillOeHeader() sends literal 16
+DEFAULT_NUM_CHANNELS = int(os.environ.get("ESP32_NUM_CHANNELS", "11"))
 DEFAULT_FIRST_FRAME_TIMEOUT = 15.0
 HANDSHAKE_PEEK_TIMEOUT = 0.3
 PLUGIN_CMD_TIMEOUT = 120.0
@@ -73,8 +72,8 @@ def pack_csv_row(fields: list[str]) -> bytes | None:
         ch = [int(fields[i]) for i in range(1, 9)]
     except ValueError:
         return None
-    hdr = HEADER.pack(0, FRAME_PAYLOAD, OE_BIT_DEPTH_S16, 2, DEFAULT_NUM_CHANNELS, 1)
-    return hdr + struct.pack(f"<{len(ch)}h", *ch)
+    hdr = HEADER.pack(0, FRAME_PAYLOAD, OE_BIT_DEPTH_S16, 2, 8, 1)
+    return hdr + struct.pack("<8h", *ch)
 
 
 def payload_bytes_from_header(hdr: tuple) -> int | None:
@@ -91,7 +90,7 @@ def is_valid_header(hdr: tuple) -> bool:
     _off, _num_bytes, bit_depth, elem, n_ch, n_per = hdr
     if elem != 2 or n_ch > 256 or n_per > 65536:
         return False
-    if bit_depth > 6:  # OpenCV Mat depth enum 0..6
+    if bit_depth not in (OE_BIT_DEPTH_S16, FIRMWARE_BIT_DEPTH) and bit_depth > 6:
         return False
     expected = payload_bytes_from_header(hdr)
     return expected is not None and expected <= 4096
@@ -114,8 +113,10 @@ def normalize_frame_for_oe(frame: bytes) -> bytes:
     hdr = HEADER.unpack_from(frame, 0)
     if hdr[2] == OE_BIT_DEPTH_S16:
         return frame
-    fixed = (hdr[0], hdr[1], OE_BIT_DEPTH_S16, hdr[3], hdr[4], hdr[5])
-    return HEADER.pack(*fixed) + frame[HEADER_SIZE:]
+    if hdr[2] == FIRMWARE_BIT_DEPTH:
+        fixed = (hdr[0], hdr[1], OE_BIT_DEPTH_S16, hdr[3], hdr[4], hdr[5])
+        return HEADER.pack(*fixed) + frame[HEADER_SIZE:]
+    return frame
 
 def _ascii_preview(data: bytes, limit: int = 80) -> str:
     text = data[:limit].decode("utf-8", errors="replace")
@@ -279,10 +280,14 @@ def _first_command_line(peek: bytes) -> str:
     return peek.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
 
 
-async def send_plugin_handshake_replies(writer: asyncio.StreamWriter) -> None:
+async def send_plugin_handshake_replies(
+    writer: asyncio.StreamWriter, num_ch: int
+) -> None:
     """Match esp32_tcp_client / step_node.ino plus Red Pitaya lines for older Plugin builds."""
-    writer.write(HANDSHAKE_REPLY_ESP32)
-    writer.write(HANDSHAKE_REPLY_OK_CHANNELS)
+    writer.write(
+        f"{num_ch} channels; sample_rate=100; node=esp32s3_arduino\n".encode()
+    )
+    writer.write(f"OK CHANNELS:{num_ch}\n".encode())
     await writer.drain()
 
 
@@ -304,6 +309,7 @@ async def handle_plugin_handshake(
     first_frame_timeout: float,
     verbose: bool,
     verbose_frames: int,
+    num_ch: int,
     initial_peek: bytes = b"",
 ) -> None:
     """REDPITAYA → channel replies; START → STARTED/SENSORS; then binary from serial."""
@@ -317,7 +323,7 @@ async def handle_plugin_handshake(
 
     logger.info("Plugin handshake REDPITAYA")
     forward_serial_command(source, "REDPITAYA")
-    await send_plugin_handshake_replies(writer)
+    await send_plugin_handshake_replies(writer, num_ch)
 
     while True:
         line = await asyncio.wait_for(read_line(reader), timeout=PLUGIN_CMD_TIMEOUT)
@@ -341,6 +347,7 @@ async def handle_client(
     writer: asyncio.StreamWriter,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    num_ch: int,
     plugin_mode: bool = False,
     verbose: bool = False,
     verbose_frames: int = 5,
@@ -363,6 +370,7 @@ async def handle_client(
                 first_frame_timeout,
                 verbose,
                 verbose_frames,
+                num_ch,
                 initial_peek=peek,
             )
             return
@@ -384,6 +392,7 @@ async def handle_client(
                 first_frame_timeout,
                 verbose,
                 verbose_frames,
+                num_ch,
                 initial_peek=peek,
             )
             return
@@ -469,6 +478,7 @@ async def run_server(
     port: int,
     source: SerialFrameSource,
     first_frame_timeout: float,
+    num_ch: int,
     plugin_mode: bool,
     verbose: bool,
     verbose_frames: int,
@@ -479,6 +489,7 @@ async def run_server(
             w,
             source,
             first_frame_timeout,
+            num_ch,
             plugin_mode,
             verbose,
             verbose_frames,
@@ -538,10 +549,15 @@ def main() -> None:
         print("Usage: python host/serial_tcp_bridge.py COM5", file=sys.stderr)
         sys.exit(1)
 
+    num_ch = int(os.environ.get("ESP32_NUM_CHANNELS", str(DEFAULT_NUM_CHANNELS)))
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     payload = "CSV" if args.csv else "Open Ephys binary"
     client_mode = "Plugin AcqBoard (--plugin)" if args.plugin else "Ephys Socket or auto Plugin"
-    print(f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} ({payload}; {client_mode})")
+    print(
+        f"Serial {args.port} @ {args.baud} → TCP {args.bind}:{args.tcp_port} "
+        f"({payload}; {num_ch} ch; {client_mode})"
+    )
     print(
         "Close Serial Monitor before starting. "
         "Flash with USB_OPEN_EPHYS_MODE true; wait >5 s after boot."
@@ -573,6 +589,7 @@ def main() -> None:
                 args.tcp_port,
                 source,
                 args.first_frame_timeout,
+                num_ch,
                 args.plugin,
                 args.verbose,
                 args.verbose_frames,
