@@ -75,12 +75,16 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 
 ### Channel map (ESP32 firmware ≥1.5.0)
 
-| Ch | Role | `FILTER OFF` | `FILTER ON` |
-|----|------|--------------|-------------|
-| 0–2 | Accel raw (ICM int16) | IMU | IMU |
-| 3–5 | Gyro raw (ICM int16) | IMU | IMU |
-| 6 | DIO (bit0 level, bits1–15 edge count) | DIO | DIO |
-| 7–10 | Filter quaternion Q15 (qw,qx,qy,qz) | **0** (flat) | Mahony AHRS |
+| Ch | Open Ephys label (Plugin) | Role | `FILTER OFF` | `FILTER ON` |
+|----|---------------------------|------|--------------|-------------|
+| 0–2 | `ax`, `ay`, `az` | Accel raw (ICM int16) | IMU | IMU |
+| 3–5 | `gx`, `gy`, `gz` | Gyro raw (ICM int16) | IMU | IMU |
+| 6 | `dio` | DIO (bit0 level, bits1–15 edge count) | DIO | DIO |
+| 7–10 | `qw`, `qx`, `qy`, `qz` | Filter quaternion Q15 | **0** (flat) | Mahony AHRS |
+
+**Flat channels in the GUI:** With **Filter OFF**, ch7–10 are intentionally zero. With **Filter ON**, quat channels are Q15 (±32767) while accel/gyro are raw LSB — auto-scaled traces can make quats look “flat” if the Y axis is tuned for ~16k accel counts. Toggle filter or rescale the display.
+
+**OpenSim (one IMU):** Plugin sends UDP v2 with `n_sensors=1` only. Enable **Filter ON** (firmware Mahony on ch7–10, or plugin Madgwick fallback on 6–8 ch packets). Do not use the pre-1.5.0 layout that treated gyro slots as quaternion components.
 
 **Before v1.5.0 (8 ch, deprecated):** ch3–5 and ch7 held gyro **or** quat (mutually exclusive on wire). Plugin ≥ current still decodes legacy 8-ch packets if `channelsInPacket < 11`.
 
