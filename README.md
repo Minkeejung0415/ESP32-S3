@@ -23,8 +23,6 @@ Wiring: ICM **VCC→3V3**, **GND→GND**, **SDA→D4**, **SCL→D5**. Flash **XI
 python host/serial_bench_reader.py COM5
 ```
 
-**Open Ephys + OpenSim (v1.4):** flash with `SERIAL_OUTPUT_BINARY true`, run `host/serial_tcp_bridge.py`, see [docs/esp32-fusion-and-opensim.md](docs/esp32-fusion-and-opensim.md).
-
 ### (B) Open Wi-Fi — TCP, no password
 
 ```cpp
@@ -62,9 +60,7 @@ Full steps: **[docs/arduino-ide-guide.md](docs/arduino-ide-guide.md)**
 
 **Wiring diagram (Mermaid + ASCII):** [docs/wiring-diagram.md](docs/wiring-diagram.md)
 
-**Open Ephys / Plugin repo:** [docs/open-ephys-plugin.md](docs/open-ephys-plugin.md)
-
-**Full local setup (Windows):** [docs/local-open-ephys-setup.md](docs/local-open-ephys-setup.md)
+**Open Ephys / Plugin / OpenSim:** [docs/integration-checklist.md](docs/integration-checklist.md) (master checklist) · [docs/open-ephys-plugin.md](docs/open-ephys-plugin.md)
 
 ## Red Pitaya parity
 
@@ -87,7 +83,7 @@ Same modules in **`firmware/`** — menuconfig **STEP_ENABLE_ESPNOW** defaults o
 | Script | Use when |
 |--------|----------|
 | `host/serial_bench_reader.py COMx` | USB serial bench (no Wi-Fi) |
-| `host/serial_tcp_bridge.py COMx` | USB → localhost:5000 for Open Ephys — requires **`USB_OPEN_EPHYS_MODE true`** on board |
+| `host/serial_tcp_bridge.py COMx` | USB → localhost:5000 for Open Ephys (no Wi-Fi) |
 | `host/esp32_tcp_client.py` | TCP test (Wi-Fi node or 127.0.0.1 via bridge) |
 
 ## Repository
