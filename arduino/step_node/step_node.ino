@@ -141,6 +141,7 @@ struct {
 } dio_state = {true, true, 0, 0};
 
 static uint16_t g_sample_hz = SAMPLE_HZ_DEFAULT;
+static uint32_t g_sample_last_us = 0;
 static uint8_t g_acc_preset = 0;
 static uint8_t g_gyr_preset = 0;
 static bool g_filter_on = false;
@@ -286,6 +287,7 @@ static bool handleCfgLine(const String &line) {
   if (strncmp(kind, "SRATE", 5) == 0) {
     int hz = constrain(preset, SAMPLE_HZ_MIN, SAMPLE_HZ_MAX);
     g_sample_hz = (uint16_t)hz;
+    g_sample_last_us = 0;
     char buf[48];
     snprintf(buf, sizeof(buf), "OK FREQ:%d\n", hz);
     replyToHost(buf);
@@ -557,6 +559,7 @@ static void handleLine(const String &line) {
       replyToHost(err);
     } else {
       g_sample_hz = (uint16_t)hz;
+      g_sample_last_us = 0;
       char ok[32];
       snprintf(ok, sizeof(ok), "OK FREQ:%d\n", hz);
       replyToHost(ok);
@@ -917,10 +920,11 @@ void loop() {
     return;
   }
 
-  static uint32_t last_us = 0;
   uint32_t now = micros();
-  if (now - last_us < (1000000UL / g_sample_hz)) return;
-  last_us = now;
+  const uint32_t period_us = 1000000UL / (uint32_t)g_sample_hz;
+  if (g_sample_last_us != 0 && (uint32_t)(now - g_sample_last_us) < period_us)
+    return;
+  g_sample_last_us = now;
 
   int16_t imu[6];
   readImu(imu);

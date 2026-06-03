@@ -332,7 +332,8 @@ async def send_plugin_start_replies(writer: asyncio.StreamWriter) -> None:
 
 def forward_serial_command(source: SerialFrameSource, command: str) -> None:
     """Optional USB logging: firmware pollSerialCommands() accepts REDPITAYA/START."""
-    source.write_line(f"{command}\n")
+    line = command.rstrip("\r\n")
+    source.write_line(line + "\n")
 
 
 async def handle_plugin_handshake(
