@@ -61,18 +61,30 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 |------|--------------------------------------------|----------------------------------|
 | TCP port | **5000** (control only) | **5000** (control **and** sample stream) |
 | Data transport | **UDP 55001** (`sendto` per sample) | **Same TCP socket** after `START` |
-| `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `8 channels; sample_rate=<Hz>; node=esp32s3_arduino; filter=on\|off\n` |
+| `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `11 channels; sample_rate=<Hz>; node=esp32s3_arduino; filter=on\|off\n` + `OK CHANNELS:11\n` |
 | `START\n` reply | `STARTED BIN:… CSV:…\n` then `SENSORS:0,ICM20948;…\n` | `STARTED BIN:…` + `SENSORS:0,ICM20948\n` (USB bridge synthesizes if needed) |
 | Sample rate | Configurable (`FREQ:`), default 100 Hz | **`FREQ:50`–`FREQ:200`** (default 100 Hz) |
 | `CFG` / `FILTER` | Yes | **`CFG 0 ACC|GYR <0-3>`**, **`FILTER ON|OFF`** |
-| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **8** int16 |
+| Channels | Dynamic (sensors × raw + quat + analog) | Fixed **11** int16 (firmware ≥1.5.0) |
 | Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout |
 | Payload | int16 channel-major | int16 channel-major |
-| ch0–5 | IMU (scaled in plugin by sensor preset) | ICM20948 ax, ay, az, gx, gy, gz (raw int16) |
+| Raw IMU | Always in first `num_raw` slots per sensor (e.g. MPU6050: ch0–2 acc, ch3–5 gyr) | **Always** ch0–2 acc, ch3–5 gyr (never replaced by quat) |
+| Filter / quat | Next 4 slots after raw (`num_raw`…`num_raw+3`), Q15; **0 when `FILTER OFF`** | ch7–10 qw,qx,qy,qz Q15; **0 when `FILTER OFF`** |
 | ch6 | Part of sensor layout / DIO varies | DIO packed (level + edge count) |
-| ch7 | Reserved / fusion / analog | **`qw` Q15 when `FILTER ON`**; else 0 |
-| ch3–5 (filter on) | Gyro or quat | **`qx,qy,qz` Q15** (gyro not on wire when filter on) |
 | Host discovery | Hardcoded `rp-f0f85a.local`, `rp-f0cd35.local` | Wi-Fi IP from Serial Monitor |
+
+### Channel map (ESP32 firmware ≥1.5.0)
+
+| Ch | Role | `FILTER OFF` | `FILTER ON` |
+|----|------|--------------|-------------|
+| 0–2 | Accel raw (ICM int16) | IMU | IMU |
+| 3–5 | Gyro raw (ICM int16) | IMU | IMU |
+| 6 | DIO (bit0 level, bits1–15 edge count) | DIO | DIO |
+| 7–10 | Filter quaternion Q15 (qw,qx,qy,qz) | **0** (flat) | Mahony AHRS |
+
+**Before v1.5.0 (8 ch, deprecated):** ch3–5 and ch7 held gyro **or** quat (mutually exclusive on wire). Plugin ≥ current still decodes legacy 8-ch packets if `channelsInPacket < 11`.
+
+**Red Pitaya reference (one MPU6050-class sensor):** 6 raw + 4 quat = 10 stream slots (+ analog tail). ESP32 uses 6 raw + DIO + 4 quat = 11.
 
 **What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, configurable rate (50–200 Hz).
 
@@ -83,12 +95,12 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | `REDPITAYA\n` | Returns `sample_rate=<Hz>` and `filter=on\|off` |
 | `FREQ:<Hz>\n` | 50–200 Hz |
 | `CFG 0 ACC <0-3>\n` / `CFG 0 GYR <0-3>\n` | ICM full-scale presets |
-| `FILTER ON\n` / `FILTER OFF\n` | Mahony quaternion on ch3–5, ch7 (Q15) |
+| `FILTER ON\n` / `FILTER OFF\n` | Mahony quaternion on ch7–10 (Q15); ch0–5 always raw |
 | `START\n` | Binary stream on same TCP socket |
 
-**OpenSim:** enable filter in Plugin, then OpenSim Live — Plugin sends UDP quaternions from ESP32 TCP path when `FILTER ON`.
+**OpenSim:** Plugin reads filter slots ch7–10 (Q15), same convention as Red Pitaya quat tail — flat zeros when `FILTER OFF`, live quat when `FILTER ON`.
 
-**What does not match the custom Plugin:** handshake text, STARTED/SENSORS lines, UDP vs TCP streaming, fixed 8-channel map, ESP32 IP vs `.local` Red Pitaya hosts, Plugin scaling expects Red Pitaya sensor slots + quaternion tail.
+**What does not match the custom Plugin:** handshake text, STARTED/SENSORS lines, UDP vs TCP streaming, ESP32 IP vs `.local` Red Pitaya hosts (Plugin `e298679+` handles TCP ESP32 path).
 
 ---
 

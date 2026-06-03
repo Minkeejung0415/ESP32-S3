@@ -45,7 +45,7 @@ def _scale_ch(v: int, env_key: str, default: float = 1.0) -> float:
 async def run_stream(host: str | None = None, port: int | None = None) -> None:
     h = host or os.environ.get("ESP32_NODE_HOST", "192.168.4.1")
     p = port if port is not None else int(os.environ.get("ESP32_NODE_PORT", "5000"))
-    num_ch = int(os.environ.get("ESP32_NUM_CHANNELS", "8"))
+    num_ch = int(os.environ.get("ESP32_NUM_CHANNELS", "11"))
 
     reader, writer = await asyncio.open_connection(h, p)
     try:
@@ -74,38 +74,21 @@ async def run_stream(host: str | None = None, port: int | None = None) -> None:
             import numpy as np
 
             s16 = np.frombuffer(payload, dtype="<i2").reshape(n_ch, n_per, order="C")
-            filter_on = os.environ.get("ESP32_FILTER_ON", "").lower() in (
-                "1",
-                "true",
-                "yes",
-            )
             if n_ch >= 6:
-                if filter_on and n_ch >= 8:
-                    s = NodeSample(
-                        ax=_scale_ch(int(s16[0, 0]), "ICM_ACCEL_SCALE"),
-                        ay=_scale_ch(int(s16[1, 0]), "ICM_ACCEL_SCALE"),
-                        az=_scale_ch(int(s16[2, 0]), "ICM_ACCEL_SCALE"),
-                        gx=0.0,
-                        gy=0.0,
-                        gz=0.0,
-                        dio=int(s16[6, 0]) if n_ch > 6 else 0,
-                        camera=0,
-                        qw=_q15_to_unit(int(s16[7, 0])),
-                        qx=_q15_to_unit(int(s16[3, 0])),
-                        qy=_q15_to_unit(int(s16[4, 0])),
-                        qz=_q15_to_unit(int(s16[5, 0])),
-                    )
-                else:
-                    s = NodeSample(
-                        ax=_scale_ch(int(s16[0, 0]), "ICM_ACCEL_SCALE"),
-                        ay=_scale_ch(int(s16[1, 0]), "ICM_ACCEL_SCALE"),
-                        az=_scale_ch(int(s16[2, 0]), "ICM_ACCEL_SCALE"),
-                        gx=_scale_ch(int(s16[3, 0]), "ICM_GYRO_SCALE"),
-                        gy=_scale_ch(int(s16[4, 0]), "ICM_GYRO_SCALE"),
-                        gz=_scale_ch(int(s16[5, 0]), "ICM_GYRO_SCALE"),
-                        dio=int(s16[6, 0]) if n_ch > 6 else 0,
-                        camera=int(s16[7, 0]) if n_ch > 7 else 0,
-                    )
+                s = NodeSample(
+                    ax=_scale_ch(int(s16[0, 0]), "ICM_ACCEL_SCALE"),
+                    ay=_scale_ch(int(s16[1, 0]), "ICM_ACCEL_SCALE"),
+                    az=_scale_ch(int(s16[2, 0]), "ICM_ACCEL_SCALE"),
+                    gx=_scale_ch(int(s16[3, 0]), "ICM_GYRO_SCALE"),
+                    gy=_scale_ch(int(s16[4, 0]), "ICM_GYRO_SCALE"),
+                    gz=_scale_ch(int(s16[5, 0]), "ICM_GYRO_SCALE"),
+                    dio=int(s16[6, 0]) if n_ch > 6 else 0,
+                    camera=0,
+                    qw=_q15_to_unit(int(s16[7, 0])) if n_ch > 7 else 0.0,
+                    qx=_q15_to_unit(int(s16[8, 0])) if n_ch > 8 else 0.0,
+                    qy=_q15_to_unit(int(s16[9, 0])) if n_ch > 9 else 0.0,
+                    qz=_q15_to_unit(int(s16[10, 0])) if n_ch > 10 else 0.0,
+                )
                 logger.debug("sample %s", s)
     finally:
         writer.close()

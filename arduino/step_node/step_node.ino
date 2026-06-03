@@ -46,7 +46,7 @@
 #include <math.h>
 #include <string.h>
 
-#define FIRMWARE_VERSION "1.4.0"
+#define FIRMWARE_VERSION "1.5.0"
 #define WIFI_HOSTNAME "step-esp32"
 #define BOOT_CSV_DELAY_MS 5000
 #define REPEAT_STATUS_SEC 10
@@ -72,7 +72,7 @@
 #define SAMPLE_HZ_DEFAULT 100
 #define SAMPLE_HZ_MIN 50
 #define SAMPLE_HZ_MAX 200
-#define NUM_CHANNELS 8
+#define NUM_CHANNELS 11
 
 #define ICM_BANK2_ACCEL_CONFIG_1 0x14
 #define ICM_BANK2_GYRO_CONFIG_1 0x01
@@ -229,15 +229,17 @@ static void packChannelsFromImu(const int16_t imu[6]) {
   channels[0] = imu[0];
   channels[1] = imu[1];
   channels[2] = imu[2];
+  channels[3] = imu[3];
+  channels[4] = imu[4];
+  channels[5] = imu[5];
   channels[6] = packDioCh6();
+  channels[7] = 0;
+  channels[8] = 0;
+  channels[9] = 0;
+  channels[10] = 0;
 
-  if (!g_filter_on) {
-    channels[3] = imu[3];
-    channels[4] = imu[4];
-    channels[5] = imu[5];
-    channels[7] = 0;
+  if (!g_filter_on)
     return;
-  }
 
   const float ax = (float)imu[0] / acc_scale;
   const float ay = (float)imu[1] / acc_scale;
@@ -247,10 +249,10 @@ static void packChannelsFromImu(const int16_t imu[6]) {
   const float gz = ((float)imu[5] / gyr_scale) * (float)(M_PI / 180.0);
   mahonyAhrsUpdate(gx, gy, gz, ax, ay, az, dt);
 
-  channels[3] = floatToQ15(ahrs_qx);
-  channels[4] = floatToQ15(ahrs_qy);
-  channels[5] = floatToQ15(ahrs_qz);
   channels[7] = floatToQ15(ahrs_qw);
+  channels[8] = floatToQ15(ahrs_qx);
+  channels[9] = floatToQ15(ahrs_qy);
+  channels[10] = floatToQ15(ahrs_qz);
 }
 
 static int parseFreqHz(const String &line) {
@@ -540,10 +542,12 @@ static void handleLine(const String &line) {
   if (line.startsWith("REDPITAYA")) {
     char buf[96];
     snprintf(buf, sizeof(buf),
-             "8 channels; sample_rate=%u; node=esp32s3_arduino; filter=%s\n",
-             (unsigned)g_sample_hz, g_filter_on ? "on" : "off");
+             "%d channels; sample_rate=%u; node=esp32s3_arduino; filter=%s\n",
+             NUM_CHANNELS, (unsigned)g_sample_hz, g_filter_on ? "on" : "off");
     replyToHost(buf);
-    replyToHost("OK CHANNELS:8\n");
+    char okCh[24];
+    snprintf(okCh, sizeof(okCh), "OK CHANNELS:%d\n", NUM_CHANNELS);
+    replyToHost(okCh);
   } else if (line.startsWith("FREQ:") || line.startsWith("FREQ ")) {
     int hz = parseFreqHz(line);
     if (hz < SAMPLE_HZ_MIN || hz > SAMPLE_HZ_MAX) {
