@@ -80,7 +80,7 @@ def _parse_freq_hz(line: str) -> int | None:
 def _note_forwarded_plugin_command(line: str) -> None:
     global _plugin_sample_rate_hz
     hz = _parse_freq_hz(line)
-    if hz is not None and 1 <= hz <= 2000:
+    if hz is not None and hz >= 1:
         _plugin_sample_rate_hz = hz
 
 

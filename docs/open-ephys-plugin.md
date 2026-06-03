@@ -63,7 +63,7 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 | Data transport | **UDP 55001** (`sendto` per sample) | **Same TCP socket** after `START` |
 | `REDPITAYA\n` reply | `OK CHANNELS:<N>\n` | `11 channels; sample_rate=<Hz>; node=esp32s3_arduino; filter=on\|off\n` + `OK CHANNELS:11\n` |
 | `START\n` reply | `STARTED BIN:… CSV:…\n` then `SENSORS:0,ICM20948;…\n` | `STARTED BIN:…` + `SENSORS:0,ICM20948\n` (USB bridge synthesizes if needed) |
-| Sample rate | Configurable (`FREQ:`), default 100 Hz | **`FREQ:50`–`FREQ:200`** (default 100 Hz) |
+| Sample rate | Configurable (`FREQ:`), default 100 Hz | **`FREQ:<Hz>`** any integer **≥ 1** (default 100 Hz; no firmware/plugin cap — user finds true min/max by testing) |
 | `CFG` / `FILTER` | Yes | **`CFG 0 ACC|GYR <0-3>`**, **`FILTER ON|OFF`** |
 | Channels | Dynamic (sensors × raw + quat + analog) | Fixed **11** int16 (firmware ≥1.5.0) |
 | Packet header | 22-byte LE `iiHiii` | **Same** 22-byte layout |
@@ -90,14 +90,14 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 
 **Red Pitaya reference (one MPU6050-class sensor):** 6 raw + 4 quat = 10 stream slots (+ analog tail). ESP32 uses 6 raw + DIO + 4 quat = 11.
 
-**What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, configurable rate (50–200 Hz).
+**What already matches:** port 5000, `REDPITAYA` / `START` command names, 22-byte Open Ephys header, int16 channel-major samples, configurable rate via `FREQ:` (Hz ≥ 1 only).
 
 ### ESP32 TCP text commands (v2.0)
 
 | Command | Notes |
 |---------|--------|
 | `REDPITAYA\n` | Returns `sample_rate=<Hz>` and `filter=on\|off` |
-| `FREQ:<Hz>\n` | 50–200 Hz |
+| `FREQ:<Hz>\n` | Any Hz **≥ 1** (invalid ≤ 0 rejected) |
 | `CFG 0 ACC <0-3>\n` / `CFG 0 GYR <0-3>\n` | ICM full-scale presets |
 | `FILTER ON\n` / `FILTER OFF\n` | Mahony quaternion on ch7–10 (Q15); ch0–5 always raw |
 | `START\n` | Binary stream on same TCP socket |
@@ -105,6 +105,13 @@ There is **no** separate Ephys Socket implementation in that repo; streaming log
 **OpenSim:** Plugin reads filter slots ch7–10 (Q15), same convention as Red Pitaya quat tail — flat zeros when `FILTER OFF`, live quat when `FILTER ON`.
 
 **What does not match the custom Plugin:** handshake text, STARTED/SENSORS lines, UDP vs TCP streaming, ESP32 IP vs `.local` Red Pitaya hosts (Plugin `e298679+` handles TCP ESP32 path).
+
+### Sample rate (no fixed cap)
+
+Firmware, USB bridge, and Plugin accept any **Hz ≥ 1** via `FREQ:<Hz>` / editor HW rate (Red Pitaya boards still use **1–2000 Hz** in the Plugin). There is no 50–200 Hz clamp — find the real minimum and maximum by experiment:
+
+- **Too high:** duplicated samples (same seq/value repeated) — loop cannot keep up or USB/TCP cannot carry the stream.
+- **Too low / USB-limited:** gaps or lost frames (sequence jumps, uneven timeline).
 
 ---
 

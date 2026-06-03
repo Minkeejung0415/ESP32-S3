@@ -70,8 +70,6 @@
 
 #define TCP_PORT 5000
 #define SAMPLE_HZ_DEFAULT 100
-#define SAMPLE_HZ_MIN 50
-#define SAMPLE_HZ_MAX 200
 #define NUM_CHANNELS 11
 
 #define ICM_BANK2_ACCEL_CONFIG_1 0x14
@@ -263,6 +261,10 @@ static int parseFreqHz(const String &line) {
   return tail.toInt();
 }
 
+static bool sampleHzValid(int hz) {
+  return hz >= 1 && hz <= 65535;
+}
+
 static bool handleCfgLine(const String &line) {
   if (!line.startsWith("CFG ")) return false;
   int si = -1, preset = -1;
@@ -285,7 +287,11 @@ static bool handleCfgLine(const String &line) {
     return true;
   }
   if (strncmp(kind, "SRATE", 5) == 0) {
-    int hz = constrain(preset, SAMPLE_HZ_MIN, SAMPLE_HZ_MAX);
+    if (!sampleHzValid(preset)) {
+      replyToHost("ERROR CFG: SRATE Hz must be >= 1\n");
+      return true;
+    }
+    int hz = preset;
     g_sample_hz = (uint16_t)hz;
     g_sample_last_us = 0;
     char buf[48];
@@ -552,11 +558,8 @@ static void handleLine(const String &line) {
     replyToHost(okCh);
   } else if (line.startsWith("FREQ:") || line.startsWith("FREQ ")) {
     int hz = parseFreqHz(line);
-    if (hz < SAMPLE_HZ_MIN || hz > SAMPLE_HZ_MAX) {
-      char err[64];
-      snprintf(err, sizeof(err), "ERROR FREQ: allowed %d-%d Hz\n", SAMPLE_HZ_MIN,
-               SAMPLE_HZ_MAX);
-      replyToHost(err);
+    if (!sampleHzValid(hz)) {
+      replyToHost("ERROR FREQ: Hz must be >= 1\n");
     } else {
       g_sample_hz = (uint16_t)hz;
       g_sample_last_us = 0;
@@ -921,6 +924,8 @@ void loop() {
   }
 
   uint32_t now = micros();
+  if (g_sample_hz < 1)
+    return;
   const uint32_t period_us = 1000000UL / (uint32_t)g_sample_hz;
   if (g_sample_last_us != 0 && (uint32_t)(now - g_sample_last_us) < period_us)
     return;
